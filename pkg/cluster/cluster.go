@@ -922,13 +922,6 @@ func (c *Cluster) Update(oldSpec, newSpec *acidv1.Postgresql) error {
 		}
 	}()
 
-	// Volume
-	if c.OpConfig.StorageResizeMode != "off" {
-		c.syncVolumes()
-	} else {
-		c.logger.Infof("Storage resize is disabled (storage_resize_mode is off). Skipping volume sync.")
-	}
-
 	// streams configuration
 	if len(oldSpec.Spec.Streams) == 0 && len(newSpec.Spec.Streams) > 0 {
 		syncStatefulSet = true

@@ -79,18 +79,6 @@ func (c *Cluster) Sync(newSpec *acidv1.Postgresql) error {
 		return err
 	}
 
-	// sync volume may already transition volumes to gp3, if iops/throughput or type is specified
-	if err = c.syncVolumes(); err != nil {
-		return err
-	}
-
-	if c.OpConfig.EnableEBSGp3Migration && len(c.EBSVolumes) > 0 {
-		err = c.executeEBSMigration()
-		if nil != err {
-			return err
-		}
-	}
-
 	c.logger.Debug("syncing statefulsets")
 	if err = c.syncStatefulSet(); err != nil {
 		if !k8sutil.ResourceAlreadyExists(err) {
@@ -402,6 +390,18 @@ func (c *Cluster) syncStatefulSet() error {
 				if err := c.replaceStatefulSet(desiredSts); err != nil {
 					return fmt.Errorf("could not replace statefulset: %v", err)
 				}
+			}
+		}
+
+		// sync volume may already transition volumes to gp3, if iops/throughput or type is specified
+		if err = c.syncVolumes(); err != nil {
+			return err
+		}
+
+		if c.OpConfig.EnableEBSGp3Migration && len(c.EBSVolumes) > 0 {
+			err = c.executeEBSMigration()
+			if nil != err {
+				return err
 			}
 		}
 
