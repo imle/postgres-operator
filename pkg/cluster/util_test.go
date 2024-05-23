@@ -2,12 +2,14 @@ package cluster
 
 import (
 	"context"
+	"fmt"
+	"reflect"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	acidv1 "github.com/zalando/postgres-operator/pkg/apis/acid.zalan.do/v1"
 	fakeacidv1 "github.com/zalando/postgres-operator/pkg/generated/clientset/versioned/fake"
-	"github.com/zalando/postgres-operator/pkg/util"
 	"github.com/zalando/postgres-operator/pkg/util/config"
 	"github.com/zalando/postgres-operator/pkg/util/k8sutil"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -19,18 +21,19 @@ func newFakeK8sAnnotationsClient() (k8sutil.KubernetesClient, *k8sFake.Clientset
 	acidClientSet := fakeacidv1.NewSimpleClientset()
 
 	return k8sutil.KubernetesClient{
-		PodDisruptionBudgetsGetter: clientSet.PolicyV1(),
-		ServicesGetter:             clientSet.CoreV1(),
-		StatefulSetsGetter:         clientSet.AppsV1(),
-		PostgresqlsGetter:          acidClientSet.AcidV1(),
+		PodDisruptionBudgetsGetter:   clientSet.PolicyV1(),
+		ServicesGetter:               clientSet.CoreV1(),
+		StatefulSetsGetter:           clientSet.AppsV1(),
+		PostgresqlsGetter:            acidClientSet.AcidV1(),
+		PersistentVolumeClaimsGetter: clientSet.CoreV1(),
+		PersistentVolumesGetter:      clientSet.CoreV1(),
+		EndpointsGetter:              clientSet.CoreV1(),
+		PodsGetter:                   clientSet.CoreV1(),
+		DeploymentsGetter:            clientSet.AppsV1(),
 	}, clientSet
 }
 
-func TestInheritedAnnotations(t *testing.T) {
-	testName := "test inheriting annotations from manifest"
-	client, _ := newFakeK8sAnnotationsClient()
-	clusterName := "acid-test-cluster"
-	namespace := "default"
+func newInheritedAnnotationsCluster(client k8sutil.KubernetesClient) (*Cluster, error) {
 	annotationValue := "acid"
 	role := Master
 
@@ -39,6 +42,7 @@ func TestInheritedAnnotations(t *testing.T) {
 			Name: clusterName,
 			Annotations: map[string]string{
 				"owned-by": annotationValue,
+				"foo":      "bar",
 			},
 		},
 		Spec: acidv1.PostgresSpec{
@@ -49,7 +53,7 @@ func TestInheritedAnnotations(t *testing.T) {
 		},
 	}
 
-	var cluster = New(
+	cluster := New(
 		Config{
 			OpConfig: config.Config{
 				ConnectionPooler: config.ConnectionPooler{
@@ -61,69 +65,21 @@ func TestInheritedAnnotations(t *testing.T) {
 				},
 				PodManagementPolicy: "ordered_ready",
 				Resources: config.Resources{
-					ClusterLabels:        map[string]string{"application": "spilo"},
-					ClusterNameLabel:     "cluster-name",
-					DefaultCPURequest:    "300m",
-					DefaultCPULimit:      "300m",
-					DefaultMemoryRequest: "300Mi",
-					DefaultMemoryLimit:   "300Mi",
-					InheritedAnnotations: []string{"owned-by"},
-					PodRoleLabel:         "spilo-role",
+					ClusterLabels:         map[string]string{"application": "spilo"},
+					ClusterNameLabel:      "cluster-name",
+					DefaultCPURequest:     "300m",
+					DefaultCPULimit:       "300m",
+					DefaultMemoryRequest:  "300Mi",
+					DefaultMemoryLimit:    "300Mi",
+					InheritedAnnotations:  []string{"owned-by"},
+					PodRoleLabel:          "spilo-role",
+					ResourceCheckInterval: time.Duration(testResourceCheckInterval),
+					ResourceCheckTimeout:  time.Duration(testResourceCheckTimeout),
 				},
 			},
 		}, client, pg, logger, eventRecorder)
-
 	cluster.Name = clusterName
 	cluster.Namespace = namespace
-
-	// test annotationsSet function
-	inheritedAnnotations := cluster.annotationsSet(nil)
-
-	listOptions := metav1.ListOptions{
-		LabelSelector: cluster.labelsSet(false).String(),
-	}
-
-	// check statefulset annotations
-	_, err := cluster.createStatefulSet()
-	assert.NoError(t, err)
-
-	stsList, err := client.StatefulSets(namespace).List(context.TODO(), listOptions)
-	assert.NoError(t, err)
-	for _, sts := range stsList.Items {
-		if !(util.MapContains(sts.ObjectMeta.Annotations, inheritedAnnotations)) {
-			t.Errorf("%s: StatefulSet %v not inherited annotations %#v, got %#v", testName, sts.ObjectMeta.Name, inheritedAnnotations, sts.ObjectMeta.Annotations)
-		}
-		// pod template
-		if !(util.MapContains(sts.Spec.Template.ObjectMeta.Annotations, inheritedAnnotations)) {
-			t.Errorf("%s: pod template %v not inherited annotations %#v, got %#v", testName, sts.ObjectMeta.Name, inheritedAnnotations, sts.ObjectMeta.Annotations)
-		}
-		// pvc template
-		if !(util.MapContains(sts.Spec.VolumeClaimTemplates[0].Annotations, inheritedAnnotations)) {
-			t.Errorf("%s: PVC template %v not inherited annotations %#v, got %#v", testName, sts.ObjectMeta.Name, inheritedAnnotations, sts.ObjectMeta.Annotations)
-		}
-	}
-
-	// check service annotations
-	cluster.createService(Master)
-	svcList, err := client.Services(namespace).List(context.TODO(), listOptions)
-	assert.NoError(t, err)
-	for _, svc := range svcList.Items {
-		if !(util.MapContains(svc.ObjectMeta.Annotations, inheritedAnnotations)) {
-			t.Errorf("%s: Service %v not inherited annotations %#v, got %#v", testName, svc.ObjectMeta.Name, inheritedAnnotations, svc.ObjectMeta.Annotations)
-		}
-	}
-
-	// check pod disruption budget annotations
-	cluster.createPodDisruptionBudget()
-	pdbList, err := client.PodDisruptionBudgets(namespace).List(context.TODO(), listOptions)
-	assert.NoError(t, err)
-	for _, pdb := range pdbList.Items {
-		if !(util.MapContains(pdb.ObjectMeta.Annotations, inheritedAnnotations)) {
-			t.Errorf("%s: Pod Disruption Budget %v not inherited annotations %#v, got %#v", testName, pdb.ObjectMeta.Name, inheritedAnnotations, pdb.ObjectMeta.Annotations)
-		}
-	}
-
-	// check pooler deployment annotations
 	cluster.ConnectionPooler = map[PostgresRole]*ConnectionPoolerObjects{}
 	cluster.ConnectionPooler[role] = &ConnectionPoolerObjects{
 		Name:        cluster.connectionPoolerName(role),
@@ -131,13 +87,183 @@ func TestInheritedAnnotations(t *testing.T) {
 		Namespace:   cluster.Namespace,
 		Role:        role,
 	}
-	deploy, err := cluster.generateConnectionPoolerDeployment(cluster.ConnectionPooler[role])
-	assert.NoError(t, err)
-
-	if !(util.MapContains(deploy.ObjectMeta.Annotations, inheritedAnnotations)) {
-		t.Errorf("%s: Deployment %v not inherited annotations %#v, got %#v", testName, deploy.ObjectMeta.Name, inheritedAnnotations, deploy.ObjectMeta.Annotations)
+	_, err := cluster.createStatefulSet()
+	if err != nil {
+		return nil, err
+	}
+	_, err = cluster.createService(Master)
+	if err != nil {
+		return nil, err
+	}
+	_, err = cluster.createPodDisruptionBudget()
+	if err != nil {
+		return nil, err
+	}
+	_, err = cluster.generateConnectionPoolerDeployment(cluster.ConnectionPooler[role])
+	if err != nil {
+		return nil, err
+	}
+	_, err = cluster.syncConnectionPoolerWorker(nil, &pg, Master)
+	if err != nil {
+		return nil, err
+	}
+	pvcList := CreatePVCs(namespace, clusterName, cluster.labelsSet(false), 2, "1Gi")
+	for _, pvc := range pvcList.Items {
+		cluster.KubeClient.PersistentVolumeClaims(namespace).Create(context.TODO(), &pvc, metav1.CreateOptions{})
 	}
 
+	return cluster, nil
+}
+
+func TestInheritedAnnotationsSts(t *testing.T) {
+
+}
+
+func TestInheritedAnnotations(t *testing.T) {
+	testName := "test inheriting annotations from manifest"
+	client, _ := newFakeK8sAnnotationsClient()
+	cluster, err := newInheritedAnnotationsCluster(client)
+	assert.NoError(t, err)
+
+	// test annotationsSet function
+	inheritedAnnotations := cluster.annotationsSet(nil)
+	assert.Equal(t, len(inheritedAnnotations), 1)
+
+	filterLabels := cluster.labelsSet(false)
+	listOptions := metav1.ListOptions{
+		LabelSelector: filterLabels.String(),
+	}
+
+	checkInheritedAnnotations := func(actual map[string]string, objName string, objType string) error {
+		if !(reflect.DeepEqual(actual, inheritedAnnotations)) {
+			return fmt.Errorf("%s %v not inherited annotations %#v, got %#v", objType, objName, inheritedAnnotations, actual)
+		}
+		return nil
+	}
+
+	checkSts := func() error {
+		stsList, err := client.StatefulSets(namespace).List(context.TODO(), listOptions)
+		assert.NoError(t, err)
+		for _, sts := range stsList.Items {
+			if err := checkInheritedAnnotations(sts.ObjectMeta.Annotations, sts.ObjectMeta.Name, "StatefulSet"); err != nil {
+				return err
+			}
+
+			// pod template
+			if err := checkInheritedAnnotations(sts.Spec.Template.ObjectMeta.Annotations, sts.ObjectMeta.Name, "StatefulSet pod template"); err != nil {
+				return err
+			}
+
+			// pvc template
+			if err := checkInheritedAnnotations(sts.Spec.VolumeClaimTemplates[0].Annotations, sts.ObjectMeta.Name, "StatefulSet pvc template"); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+
+	checkSvc := func() error {
+		svcList, err := client.Services(namespace).List(context.TODO(), listOptions)
+		assert.NoError(t, err)
+		for _, svc := range svcList.Items {
+			if err := checkInheritedAnnotations(svc.ObjectMeta.Annotations, svc.ObjectMeta.Name, "Service"); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+
+	checkPdb := func() error {
+		pdbList, err := client.PodDisruptionBudgets(namespace).List(context.TODO(), listOptions)
+		assert.NoError(t, err)
+		for _, pdb := range pdbList.Items {
+			if err := checkInheritedAnnotations(pdb.ObjectMeta.Annotations, pdb.ObjectMeta.Name, "Pod Disruption Budget"); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+
+	checkPvc := func() error {
+		pvcs, err := cluster.listPersistentVolumeClaims()
+		assert.NoError(t, err)
+		for _, pvc := range pvcs {
+			if err := checkInheritedAnnotations(pvc.ObjectMeta.Annotations, pvc.ObjectMeta.Name, "Volume claim"); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+
+	// Check initial state
+
+	// statefulset annotations
+	err = checkSts()
+	assert.NoError(t, err)
+
+	// service annotations
+	err = checkSvc()
+	assert.NoError(t, err)
+
+	// pod disruption budget annotations
+	err = checkPdb()
+	assert.NoError(t, err)
+
+	// pooler deployment annotations
+	_, err = cluster.syncConnectionPoolerWorker(nil, &cluster.Postgresql, Master)
+	assert.NoError(t, err)
+	deploy, err := client.Deployments(namespace).Get(context.TODO(), cluster.connectionPoolerName(Master), metav1.GetOptions{})
+	assert.NoError(t, err)
+	checkInheritedAnnotations(deploy.ObjectMeta.Annotations, deploy.ObjectMeta.Name, "Deployment")
+
+	// PVC annotations
+	cluster.syncVolumes()
+	err = checkPvc()
+	assert.NoError(t, err)
+
+	// Check annotation value change
+	cluster.ObjectMeta.Annotations["owned-by"] = "foo"
+	inheritedAnnotations = cluster.annotationsSet(nil)
+
+	// check statefulset annotations
+	cluster.syncStatefulSet()
+	err = checkSts()
+	assert.NoError(t, err)
+
+	// check service annotations
+	cluster.syncServices()
+	err = checkSvc()
+	assert.NoError(t, err)
+
+	// check pod disruption budget annotations
+	cluster.syncPodDisruptionBudget(false)
+	err = checkPdb()
+	assert.NoError(t, err)
+
+	// check pooler deployment annotations
+	_, err = cluster.syncConnectionPoolerWorker(nil, &cluster.Postgresql, Master)
+	assert.NoError(t, err)
+	deploy, err = client.Deployments(namespace).Get(context.TODO(), cluster.connectionPoolerName(Master), metav1.GetOptions{})
+	assert.NoError(t, err)
+	checkInheritedAnnotations(deploy.ObjectMeta.Annotations, deploy.ObjectMeta.Name, "Deployment")
+
+	// PVC annotations + new PVC
+	cluster.KubeClient.PersistentVolumeClaims(namespace).Create(context.TODO(), &CreatePVCs(namespace, clusterName+"-2", filterLabels, 1, "1Gi").Items[0], metav1.CreateOptions{})
+	cluster.syncVolumes()
+	err = checkPvc()
+	assert.NoError(t, err)
+
+	// Check removal of inherited annotation
+	delete(cluster.ObjectMeta.Annotations, "owned-by")
+
+	cluster.syncVolumes()
+	pvcs, err := cluster.listPersistentVolumeClaims()
+	assert.NoError(t, err)
+	for _, pvc := range pvcs {
+		if pvc.ObjectMeta.Annotations != nil && len(pvc.ObjectMeta.Annotations) > 0 {
+			t.Errorf("%s: Volume claim %v should not have any annotations, got %#v", testName, pvc.ObjectMeta.Name, pvc.ObjectMeta.Annotations)
+		}
+	}
 }
 
 func Test_trimCronjobName(t *testing.T) {

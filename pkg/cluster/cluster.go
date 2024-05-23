@@ -30,6 +30,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
 	v1 "k8s.io/api/core/v1"
+	apipolicyv1 "k8s.io/api/policy/v1"
 	policyv1 "k8s.io/api/policy/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -818,6 +819,18 @@ func (c *Cluster) compareLogicalBackupJob(cur, new *batchv1.CronJob) (match bool
 	return true, ""
 }
 
+func (c *Cluster) ComparePodDisruptionBudget(cur, new *apipolicyv1.PodDisruptionBudget) (bool, string) {
+	//TODO: improve comparison
+	if match := reflect.DeepEqual(new.Spec, cur.Spec); !match {
+		return false, "new PDB spec does not match the current one"
+	}
+	if changed, reason := c.compareAnnotations(cur.Annotations, new.Annotations); changed {
+		return false, "new PDB's annotations does not match the current one:" + reason
+	}
+
+	return true, ""
+}
+
 func getPgVersion(cronJob *batchv1.CronJob) string {
 	envs := cronJob.Spec.JobTemplate.Spec.Template.Spec.Containers[0].Env
 	for _, env := range envs {
@@ -968,7 +981,7 @@ func (c *Cluster) Update(oldSpec, newSpec *acidv1.Postgresql) error {
 	if c.OpConfig.StorageResizeMode != "off" {
 		c.syncVolumes()
 	} else {
-		c.logger.Infof("Storage resize is disabled (storage_resize_mode is off). Skipping volume sync.")
+		c.logger.Infof("Storage resize is disabled (storage_resize_mode is off). Skipping volume size sync.")
 	}
 
 	// streams configuration
