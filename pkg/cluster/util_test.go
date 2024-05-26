@@ -115,12 +115,7 @@ func newInheritedAnnotationsCluster(client k8sutil.KubernetesClient) (*Cluster, 
 	return cluster, nil
 }
 
-func TestInheritedAnnotationsSts(t *testing.T) {
-
-}
-
 func TestInheritedAnnotations(t *testing.T) {
-	testName := "test inheriting annotations from manifest"
 	client, _ := newFakeK8sAnnotationsClient()
 	cluster, err := newInheritedAnnotationsCluster(client)
 	assert.NoError(t, err)
@@ -134,6 +129,7 @@ func TestInheritedAnnotations(t *testing.T) {
 		LabelSelector: filterLabels.String(),
 	}
 
+	// helper functions
 	checkInheritedAnnotations := func(actual map[string]string, objName string, objType string) error {
 		if !(reflect.DeepEqual(actual, inheritedAnnotations)) {
 			return fmt.Errorf("%s %v not inherited annotations %#v, got %#v", objType, objName, inheritedAnnotations, actual)
@@ -141,129 +137,170 @@ func TestInheritedAnnotations(t *testing.T) {
 		return nil
 	}
 
-	checkSts := func() error {
+	checkAnnotationsRemoved := func(actual map[string]string, objName string, objType string) error {
+		if len(actual) > 0 {
+			return fmt.Errorf("%s %v should not have any annotations, got %#v", objType, objName, actual)
+		}
+		return nil
+	}
+
+	// statefulset annotations
+	checkSts := func(isRemoved bool) error {
 		stsList, err := client.StatefulSets(namespace).List(context.TODO(), listOptions)
 		assert.NoError(t, err)
+		checkFunc := checkInheritedAnnotations
+		if isRemoved {
+			checkFunc = checkAnnotationsRemoved
+		}
+
 		for _, sts := range stsList.Items {
-			if err := checkInheritedAnnotations(sts.ObjectMeta.Annotations, sts.ObjectMeta.Name, "StatefulSet"); err != nil {
+			if err := checkFunc(sts.ObjectMeta.Annotations, sts.ObjectMeta.Name, "StatefulSet"); err != nil {
 				return err
 			}
 
 			// pod template
-			if err := checkInheritedAnnotations(sts.Spec.Template.ObjectMeta.Annotations, sts.ObjectMeta.Name, "StatefulSet pod template"); err != nil {
+			if err := checkFunc(sts.Spec.Template.ObjectMeta.Annotations, sts.ObjectMeta.Name, "StatefulSet pod template"); err != nil {
 				return err
 			}
 
 			// pvc template
-			if err := checkInheritedAnnotations(sts.Spec.VolumeClaimTemplates[0].Annotations, sts.ObjectMeta.Name, "StatefulSet pvc template"); err != nil {
+			if err := checkFunc(sts.Spec.VolumeClaimTemplates[0].Annotations, sts.ObjectMeta.Name, "StatefulSet pvc template"); err != nil {
 				return err
 			}
 		}
 		return nil
 	}
-
-	checkSvc := func() error {
-		svcList, err := client.Services(namespace).List(context.TODO(), listOptions)
-		assert.NoError(t, err)
-		for _, svc := range svcList.Items {
-			if err := checkInheritedAnnotations(svc.ObjectMeta.Annotations, svc.ObjectMeta.Name, "Service"); err != nil {
-				return err
-			}
-		}
-		return nil
-	}
-
-	checkPdb := func() error {
-		pdbList, err := client.PodDisruptionBudgets(namespace).List(context.TODO(), listOptions)
-		assert.NoError(t, err)
-		for _, pdb := range pdbList.Items {
-			if err := checkInheritedAnnotations(pdb.ObjectMeta.Annotations, pdb.ObjectMeta.Name, "Pod Disruption Budget"); err != nil {
-				return err
-			}
-		}
-		return nil
-	}
-
-	checkPvc := func() error {
-		pvcs, err := cluster.listPersistentVolumeClaims()
-		assert.NoError(t, err)
-		for _, pvc := range pvcs {
-			if err := checkInheritedAnnotations(pvc.ObjectMeta.Annotations, pvc.ObjectMeta.Name, "Volume claim"); err != nil {
-				return err
-			}
-		}
-		return nil
-	}
-
-	// Check initial state
-
-	// statefulset annotations
-	err = checkSts()
-	assert.NoError(t, err)
 
 	// service annotations
-	err = checkSvc()
-	assert.NoError(t, err)
+	checkSvc := func(isRemoved bool) error {
+		svcList, err := client.Services(namespace).List(context.TODO(), listOptions)
+		assert.NoError(t, err)
+		checkFunc := checkInheritedAnnotations
+		if isRemoved {
+			checkFunc = checkAnnotationsRemoved
+		}
+
+		for _, svc := range svcList.Items {
+			if err := checkFunc(svc.ObjectMeta.Annotations, svc.ObjectMeta.Name, "Service"); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
 
 	// pod disruption budget annotations
-	err = checkPdb()
+	checkPdb := func(isRemoved bool) error {
+		pdbList, err := client.PodDisruptionBudgets(namespace).List(context.TODO(), listOptions)
+		assert.NoError(t, err)
+		checkFunc := checkInheritedAnnotations
+		if isRemoved {
+			checkFunc = checkAnnotationsRemoved
+		}
+
+		for _, pdb := range pdbList.Items {
+			if err := checkFunc(pdb.ObjectMeta.Annotations, pdb.ObjectMeta.Name, "Pod Disruption Budget"); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+
+	// PVC annotations
+	checkPvc := func(isRemoved bool) error {
+		pvcs, err := cluster.listPersistentVolumeClaims()
+		assert.NoError(t, err)
+		checkFunc := checkInheritedAnnotations
+		if isRemoved {
+			checkFunc = checkAnnotationsRemoved
+		}
+
+		for _, pvc := range pvcs {
+			if err := checkFunc(pvc.ObjectMeta.Annotations, pvc.ObjectMeta.Name, "Volume claim"); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+
+	checkPooler := func(isRemoved bool) error {
+		deploy, err := client.Deployments(namespace).Get(context.TODO(), cluster.connectionPoolerName(Master), metav1.GetOptions{})
+		assert.NoError(t, err)
+		checkFunc := checkInheritedAnnotations
+		if isRemoved {
+			checkFunc = checkAnnotationsRemoved
+		}
+
+		if err := checkFunc(deploy.ObjectMeta.Annotations, deploy.ObjectMeta.Name, "Deployment"); err != nil {
+			return err
+		}
+		return nil
+	}
+
+	// 1. Check initial state
+	err = checkSts(false)
+	assert.NoError(t, err)
+
+	err = checkSvc(false)
+	assert.NoError(t, err)
+
+	err = checkPdb(false)
 	assert.NoError(t, err)
 
 	// pooler deployment annotations
 	_, err = cluster.syncConnectionPoolerWorker(nil, &cluster.Postgresql, Master)
 	assert.NoError(t, err)
-	deploy, err := client.Deployments(namespace).Get(context.TODO(), cluster.connectionPoolerName(Master), metav1.GetOptions{})
+	err = checkPooler(false)
 	assert.NoError(t, err)
-	checkInheritedAnnotations(deploy.ObjectMeta.Annotations, deploy.ObjectMeta.Name, "Deployment")
 
-	// PVC annotations
 	cluster.syncVolumes()
-	err = checkPvc()
+	err = checkPvc(false)
 	assert.NoError(t, err)
 
-	// Check annotation value change
+	// 2. Check annotation value change
 	cluster.ObjectMeta.Annotations["owned-by"] = "foo"
 	inheritedAnnotations = cluster.annotationsSet(nil)
 
-	// check statefulset annotations
 	cluster.syncStatefulSet()
-	err = checkSts()
+	err = checkSts(false)
 	assert.NoError(t, err)
 
-	// check service annotations
 	cluster.syncServices()
-	err = checkSvc()
+	err = checkSvc(false)
 	assert.NoError(t, err)
 
-	// check pod disruption budget annotations
 	cluster.syncPodDisruptionBudget(false)
-	err = checkPdb()
+	err = checkPdb(false)
 	assert.NoError(t, err)
 
-	// check pooler deployment annotations
 	_, err = cluster.syncConnectionPoolerWorker(nil, &cluster.Postgresql, Master)
 	assert.NoError(t, err)
-	deploy, err = client.Deployments(namespace).Get(context.TODO(), cluster.connectionPoolerName(Master), metav1.GetOptions{})
+	err = checkPooler(false)
 	assert.NoError(t, err)
-	checkInheritedAnnotations(deploy.ObjectMeta.Annotations, deploy.ObjectMeta.Name, "Deployment")
 
 	// PVC annotations + new PVC
 	cluster.KubeClient.PersistentVolumeClaims(namespace).Create(context.TODO(), &CreatePVCs(namespace, clusterName+"-2", filterLabels, 1, "1Gi").Items[0], metav1.CreateOptions{})
 	cluster.syncVolumes()
-	err = checkPvc()
+	err = checkPvc(false)
 	assert.NoError(t, err)
 
-	// Check removal of inherited annotation
+	// 3. Check removal of an inherited annotation
 	delete(cluster.ObjectMeta.Annotations, "owned-by")
 
-	cluster.syncVolumes()
-	pvcs, err := cluster.listPersistentVolumeClaims()
+	cluster.syncStatefulSet()
+	err = checkSts(true)
 	assert.NoError(t, err)
-	for _, pvc := range pvcs {
-		if pvc.ObjectMeta.Annotations != nil && len(pvc.ObjectMeta.Annotations) > 0 {
-			t.Errorf("%s: Volume claim %v should not have any annotations, got %#v", testName, pvc.ObjectMeta.Name, pvc.ObjectMeta.Annotations)
-		}
-	}
+
+	cluster.syncServices()
+	err = checkSvc(true)
+	assert.NoError(t, err)
+
+	cluster.syncPodDisruptionBudget(false)
+	err = checkPdb(true)
+	assert.NoError(t, err)
+
+	cluster.syncVolumes()
+	err = checkPvc(true)
+	assert.NoError(t, err)
 }
 
 func Test_trimCronjobName(t *testing.T) {

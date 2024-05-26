@@ -3,6 +3,7 @@ package cluster
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"strconv"
 	"strings"
 
@@ -295,30 +296,11 @@ func (c *Cluster) updateService(role PostgresRole, oldService *v1.Service, newSe
 
 	serviceName := util.NameFromMeta(oldService.ObjectMeta)
 
-	// update the service annotation in order to propagate ELB notation.
-	if len(newService.ObjectMeta.Annotations) > 0 {
-		if annotationsPatchData, err := metaAnnotationsPatch(newService.ObjectMeta.Annotations); err == nil {
-			_, err = c.KubeClient.Services(serviceName.Namespace).Patch(
-				context.TODO(),
-				serviceName.Name,
-				types.MergePatchType,
-				[]byte(annotationsPatchData),
-				metav1.PatchOptions{},
-				"")
-
-			if err != nil {
-				return nil, fmt.Errorf("could not replace annotations for the service %q: %v", serviceName, err)
-			}
-		} else {
-			return nil, fmt.Errorf("could not form patch for the service metadata: %v", err)
-		}
-	}
-
 	// now, patch the service spec, but when disabling LoadBalancers do update instead
 	// patch does not work because of LoadBalancerSourceRanges field (even if set to nil)
 	oldServiceType := oldService.Spec.Type
 	newServiceType := newService.Spec.Type
-	if newServiceType == "ClusterIP" && newServiceType != oldServiceType {
+	if newServiceType == "ClusterIP" && newServiceType != oldServiceType || !reflect.DeepEqual(oldService.ObjectMeta.Annotations, newService.ObjectMeta.Annotations) {
 		newService.ResourceVersion = oldService.ResourceVersion
 		newService.Spec.ClusterIP = oldService.Spec.ClusterIP
 		svc, err = c.KubeClient.Services(serviceName.Namespace).Update(context.TODO(), newService, metav1.UpdateOptions{})
