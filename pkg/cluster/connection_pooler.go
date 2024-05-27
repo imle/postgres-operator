@@ -3,6 +3,7 @@ package cluster
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"strings"
 	"time"
 
@@ -691,7 +692,7 @@ func updateConnectionPoolerDeployment(KubeClient k8sutil.KubernetesClient, newDe
 	return deployment, nil
 }
 
-// updateConnectionPoolerAnnotations updates the annotations of connection pooler deployment
+// updateConnectionPoolerAnnotations patches the annotations of connection pooler deployment
 func updateConnectionPoolerAnnotations(KubeClient k8sutil.KubernetesClient, deployment *appsv1.Deployment, annotations map[string]string) (*appsv1.Deployment, error) {
 	patchData, err := metaAnnotationsPatch(annotations)
 	if err != nil {
@@ -1042,13 +1043,13 @@ func (c *Cluster) syncConnectionPoolerWorker(oldSpec, newSpec *acidv1.Postgresql
 		}
 	}
 
-	newAnnotations := c.AnnotationsToPropagate(c.annotationsSet(c.ConnectionPooler[role].Deployment.Annotations))
-	if newAnnotations != nil {
-		deployment, err = updateConnectionPoolerAnnotations(c.KubeClient, c.ConnectionPooler[role].Deployment, newAnnotations)
+	newAnnotations := c.AnnotationsToPropagate(c.annotationsSet(nil))
+	if !reflect.DeepEqual(c.ConnectionPooler[role].Deployment.Annotations, newAnnotations) {
+		deployment.Annotations = newAnnotations
+		deployment, err = c.KubeClient.Deployments(deployment.Namespace).Update(context.TODO(), deployment, metav1.UpdateOptions{})
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("could not update connection pooler annotations %q: %v", deployment.Name, err)
 		}
-		c.ConnectionPooler[role].Deployment = deployment
 	}
 
 	// check if pooler pods must be replaced due to secret update

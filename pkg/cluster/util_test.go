@@ -298,6 +298,11 @@ func TestInheritedAnnotations(t *testing.T) {
 	err = checkPdb(true)
 	assert.NoError(t, err)
 
+	_, err = cluster.syncConnectionPoolerWorker(nil, &cluster.Postgresql, Master)
+	assert.NoError(t, err)
+	err = checkPooler(true)
+	assert.NoError(t, err)
+
 	cluster.syncVolumes()
 	err = checkPvc(true)
 	assert.NoError(t, err)
