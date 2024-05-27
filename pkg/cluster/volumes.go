@@ -298,35 +298,6 @@ func (c *Cluster) deletePersistentVolumeClaims() error {
 	return nil
 }
 
-// func (c *Cluster) resizeVolumeClaims(newVolume acidv1.Volume) error {
-// 	c.logger.Debugln("resizing PVCs")
-// 	pvcs, err := c.listPersistentVolumeClaims()
-// 	if err != nil {
-// 		return err
-// 	}
-// 	newQuantity, err := resource.ParseQuantity(newVolume.Size)
-// 	if err != nil {
-// 		return fmt.Errorf("could not parse volume size: %v", err)
-// 	}
-// 	newSize := quantityToGigabyte(newQuantity)
-// 	for _, pvc := range pvcs {
-// 		volumeSize := quantityToGigabyte(pvc.Spec.Resources.Requests[v1.ResourceStorage])
-// 		if volumeSize >= newSize {
-// 			if volumeSize > newSize {
-// 				c.logger.Warningf("cannot shrink persistent volume")
-// 			}
-// 			continue
-// 		}
-// 		pvc.Spec.Resources.Requests[v1.ResourceStorage] = newQuantity
-// 		c.logger.Debugf("updating persistent volume claim definition for volume %q", pvc.Name)
-// 		if _, err := c.KubeClient.PersistentVolumeClaims(pvc.Namespace).Update(context.TODO(), &pvc, metav1.UpdateOptions{}); err != nil {
-// 			return fmt.Errorf("could not update persistent volume claim: %q", err)
-// 		}
-// 		c.logger.Debugf("successfully updated persistent volume claim %q", pvc.Name)
-// 	}
-// 	return nil
-// }
-
 func (c *Cluster) listPersistentVolumes() ([]*v1.PersistentVolume, error) {
 	result := make([]*v1.PersistentVolume, 0)
 
@@ -442,25 +413,6 @@ func (c *Cluster) resizeVolumes() error {
 	}
 	return nil
 }
-
-// func (c *Cluster) volumeClaimsNeedResizing(newVolume acidv1.Volume) (bool, error) {
-// 	newSize, err := resource.ParseQuantity(newVolume.Size)
-// 	manifestSize := quantityToGigabyte(newSize)
-// 	if err != nil {
-// 		return false, fmt.Errorf("could not parse volume size from the manifest: %v", err)
-// 	}
-// 	pvcs, err := c.listPersistentVolumeClaims()
-// 	if err != nil {
-// 		return false, fmt.Errorf("could not receive persistent volume claims: %v", err)
-// 	}
-// 	for _, pvc := range pvcs {
-// 		currentSize := quantityToGigabyte(pvc.Spec.Resources.Requests[v1.ResourceStorage])
-// 		if currentSize != manifestSize {
-// 			return true, nil
-// 		}
-// 	}
-// 	return false, nil
-// }
 
 func (c *Cluster) volumesNeedResizing() (bool, error) {
 	newQuantity, _ := resource.ParseQuantity(c.Spec.Volume.Size)
