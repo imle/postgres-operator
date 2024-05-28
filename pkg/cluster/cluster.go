@@ -934,9 +934,16 @@ func (c *Cluster) Update(oldSpec, newSpec *acidv1.Postgresql) error {
 		newSpec.Spec.PostgresqlParam.PgVersion = oldSpec.Spec.PostgresqlParam.PgVersion
 	}
 
+	inheritedAnnoChanged := false
+	if !reflect.DeepEqual(oldSpec.ObjectMeta.Annotations, newSpec.ObjectMeta.Annotations) {
+		inheritedAnnoChanged = true
+		syncStatefulSet = true
+	}
+
 	// Service
 	if !reflect.DeepEqual(c.generateService(Master, &oldSpec.Spec), c.generateService(Master, &newSpec.Spec)) ||
-		!reflect.DeepEqual(c.generateService(Replica, &oldSpec.Spec), c.generateService(Replica, &newSpec.Spec)) {
+		!reflect.DeepEqual(c.generateService(Replica, &oldSpec.Spec), c.generateService(Replica, &newSpec.Spec)) ||
+		inheritedAnnoChanged {
 		if err := c.syncServices(); err != nil {
 			c.logger.Errorf("could not sync services: %v", err)
 			updateFailed = true
@@ -1024,7 +1031,7 @@ func (c *Cluster) Update(oldSpec, newSpec *acidv1.Postgresql) error {
 	}
 
 	// pod disruption budget
-	if oldSpec.Spec.NumberOfInstances != newSpec.Spec.NumberOfInstances {
+	if oldSpec.Spec.NumberOfInstances != newSpec.Spec.NumberOfInstances || inheritedAnnoChanged {
 		c.logger.Debug("syncing pod disruption budgets")
 		if err := c.syncPodDisruptionBudget(true); err != nil {
 			c.logger.Errorf("could not sync pod disruption budget: %v", err)

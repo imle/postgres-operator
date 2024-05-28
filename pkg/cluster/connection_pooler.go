@@ -692,25 +692,25 @@ func updateConnectionPoolerDeployment(KubeClient k8sutil.KubernetesClient, newDe
 	return deployment, nil
 }
 
-// updateConnectionPoolerAnnotations patches the annotations of connection pooler deployment
-func updateConnectionPoolerAnnotations(KubeClient k8sutil.KubernetesClient, deployment *appsv1.Deployment, annotations map[string]string) (*appsv1.Deployment, error) {
-	patchData, err := metaAnnotationsPatch(annotations)
-	if err != nil {
-		return nil, fmt.Errorf("could not form patch for the connection pooler deployment metadata: %v", err)
-	}
-	result, err := KubeClient.Deployments(deployment.Namespace).Patch(
-		context.TODO(),
-		deployment.Name,
-		types.MergePatchType,
-		[]byte(patchData),
-		metav1.PatchOptions{},
-		"")
-	if err != nil {
-		return nil, fmt.Errorf("could not patch connection pooler annotations %q: %v", patchData, err)
-	}
-	return result, nil
+// // updateConnectionPoolerAnnotations patches the annotations of connection pooler deployment
+// func updateConnectionPoolerAnnotations(KubeClient k8sutil.KubernetesClient, deployment *appsv1.Deployment, annotations map[string]string) (*appsv1.Deployment, error) {
+// 	patchData, err := metaAnnotationsPatch(annotations)
+// 	if err != nil {
+// 		return nil, fmt.Errorf("could not form patch for the connection pooler deployment metadata: %v", err)
+// 	}
+// 	result, err := KubeClient.Deployments(deployment.Namespace).Patch(
+// 		context.TODO(),
+// 		deployment.Name,
+// 		types.MergePatchType,
+// 		[]byte(patchData),
+// 		metav1.PatchOptions{},
+// 		"")
+// 	if err != nil {
+// 		return nil, fmt.Errorf("could not patch connection pooler annotations %q: %v", patchData, err)
+// 	}
+// 	return result, nil
 
-}
+// }
 
 // Test if two connection pooler configuration needs to be synced. For simplicity
 // compare not the actual K8S objects, but the configuration itself and request
