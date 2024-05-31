@@ -824,9 +824,6 @@ func (c *Cluster) ComparePodDisruptionBudget(cur, new *apipolicyv1.PodDisruption
 	if match := reflect.DeepEqual(new.Spec, cur.Spec); !match {
 		return false, "new PDB spec does not match the current one"
 	}
-	if changed, reason := c.compareAnnotations(cur.Annotations, new.Annotations); changed {
-		return false, "new PDB's annotations does not match the current one:" + reason
-	}
 
 	return true, ""
 }
@@ -897,6 +894,8 @@ func (c *Cluster) Update(oldSpec, newSpec *acidv1.Postgresql) error {
 	updateFailed := false
 	userInitFailed := false
 	syncStatefulSet := false
+	inheritedAnnoChanged := false
+	oldInheritedAnno := c.annotationsSet(nil)
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -934,8 +933,7 @@ func (c *Cluster) Update(oldSpec, newSpec *acidv1.Postgresql) error {
 		newSpec.Spec.PostgresqlParam.PgVersion = oldSpec.Spec.PostgresqlParam.PgVersion
 	}
 
-	inheritedAnnoChanged := false
-	if !reflect.DeepEqual(oldSpec.ObjectMeta.Annotations, newSpec.ObjectMeta.Annotations) {
+	if !reflect.DeepEqual(oldInheritedAnno, c.annotationsSet(nil)) {
 		inheritedAnnoChanged = true
 		syncStatefulSet = true
 	}
@@ -944,7 +942,7 @@ func (c *Cluster) Update(oldSpec, newSpec *acidv1.Postgresql) error {
 	if !reflect.DeepEqual(c.generateService(Master, &oldSpec.Spec), c.generateService(Master, &newSpec.Spec)) ||
 		!reflect.DeepEqual(c.generateService(Replica, &oldSpec.Spec), c.generateService(Replica, &newSpec.Spec)) ||
 		inheritedAnnoChanged {
-		if err := c.syncServices(); err != nil {
+		if err := c.syncServices(inheritedAnnoChanged); err != nil {
 			c.logger.Errorf("could not sync services: %v", err)
 			updateFailed = true
 		}
@@ -986,7 +984,7 @@ func (c *Cluster) Update(oldSpec, newSpec *acidv1.Postgresql) error {
 
 	// Volume
 	if c.OpConfig.StorageResizeMode != "off" {
-		c.syncVolumes()
+		c.syncVolumes(inheritedAnnoChanged)
 	} else {
 		c.logger.Infof("Storage resize is disabled (storage_resize_mode is off). Skipping volume size sync.")
 	}
@@ -1033,7 +1031,7 @@ func (c *Cluster) Update(oldSpec, newSpec *acidv1.Postgresql) error {
 	// pod disruption budget
 	if oldSpec.Spec.NumberOfInstances != newSpec.Spec.NumberOfInstances || inheritedAnnoChanged {
 		c.logger.Debug("syncing pod disruption budgets")
-		if err := c.syncPodDisruptionBudget(true); err != nil {
+		if err := c.syncPodDisruptionBudget(true, inheritedAnnoChanged); err != nil {
 			c.logger.Errorf("could not sync pod disruption budget: %v", err)
 			updateFailed = true
 		}
@@ -1105,7 +1103,7 @@ func (c *Cluster) Update(oldSpec, newSpec *acidv1.Postgresql) error {
 	// need to process. In the future we may want to do this more careful and
 	// check which databases we need to process, but even repeating the whole
 	// installation process should be good enough.
-	if _, err := c.syncConnectionPooler(oldSpec, newSpec, c.installLookupFunction); err != nil {
+	if _, err := c.syncConnectionPooler(oldSpec, newSpec, c.installLookupFunction, inheritedAnnoChanged); err != nil {
 		c.logger.Errorf("could not sync connection pooler: %v", err)
 		updateFailed = true
 	}

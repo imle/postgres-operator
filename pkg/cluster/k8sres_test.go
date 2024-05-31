@@ -2717,14 +2717,14 @@ func TestEnableLoadBalancers(t *testing.T) {
 		cluster.ConnectionPooler = map[PostgresRole]*ConnectionPoolerObjects{}
 		generatedServices := make([]v1.ServiceSpec, 0)
 		for _, role := range roles {
-			cluster.syncService(role)
+			cluster.syncService(role, false)
 			cluster.ConnectionPooler[role] = &ConnectionPoolerObjects{
 				Name:        cluster.connectionPoolerName(role),
 				ClusterName: cluster.Name,
 				Namespace:   cluster.Namespace,
 				Role:        role,
 			}
-			cluster.syncConnectionPoolerWorker(&tt.pgSpec, &tt.pgSpec, role)
+			cluster.syncConnectionPoolerWorker(&tt.pgSpec, &tt.pgSpec, role, false)
 			generatedServices = append(generatedServices, cluster.Services[role].Spec)
 			generatedServices = append(generatedServices, cluster.ConnectionPooler[role].Service.Spec)
 		}

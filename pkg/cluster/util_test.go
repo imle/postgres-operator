@@ -22,6 +22,7 @@ func newFakeK8sAnnotationsClient() (k8sutil.KubernetesClient, *k8sFake.Clientset
 
 	return k8sutil.KubernetesClient{
 		PodDisruptionBudgetsGetter:   clientSet.PolicyV1(),
+		SecretsGetter:                clientSet.CoreV1(),
 		ServicesGetter:               clientSet.CoreV1(),
 		StatefulSetsGetter:           clientSet.AppsV1(),
 		PostgresqlsGetter:            acidClientSet.AcidV1(),
@@ -35,7 +36,7 @@ func newFakeK8sAnnotationsClient() (k8sutil.KubernetesClient, *k8sFake.Clientset
 
 func newInheritedAnnotationsCluster(client k8sutil.KubernetesClient) (*Cluster, error) {
 	annotationValue := "acid"
-	role := Master
+	// role := Master
 
 	pg := acidv1.Postgresql{
 		ObjectMeta: metav1.ObjectMeta{
@@ -46,7 +47,7 @@ func newInheritedAnnotationsCluster(client k8sutil.KubernetesClient) (*Cluster, 
 			},
 		},
 		Spec: acidv1.PostgresSpec{
-			EnableReplicaConnectionPooler: boolToPointer(true),
+			EnableConnectionPooler: boolToPointer(true),
 			Volume: acidv1.Volume{
 				Size: "1Gi",
 			},
@@ -63,6 +64,7 @@ func newInheritedAnnotationsCluster(client k8sutil.KubernetesClient) (*Cluster, 
 					ConnectionPoolerDefaultMemoryLimit:   "100Mi",
 					NumberOfInstances:                    k8sutil.Int32ToPointer(1),
 				},
+				PDBNameFormat:       "postgres-{cluster}-pdb",
 				PodManagementPolicy: "ordered_ready",
 				Resources: config.Resources{
 					ClusterLabels:         map[string]string{"application": "spilo"},
@@ -80,13 +82,6 @@ func newInheritedAnnotationsCluster(client k8sutil.KubernetesClient) (*Cluster, 
 		}, client, pg, logger, eventRecorder)
 	cluster.Name = clusterName
 	cluster.Namespace = namespace
-	cluster.ConnectionPooler = map[PostgresRole]*ConnectionPoolerObjects{}
-	cluster.ConnectionPooler[role] = &ConnectionPoolerObjects{
-		Name:        cluster.connectionPoolerName(role),
-		ClusterName: cluster.Name,
-		Namespace:   cluster.Namespace,
-		Role:        role,
-	}
 	_, err := cluster.createStatefulSet()
 	if err != nil {
 		return nil, err
@@ -99,17 +94,18 @@ func newInheritedAnnotationsCluster(client k8sutil.KubernetesClient) (*Cluster, 
 	if err != nil {
 		return nil, err
 	}
-	_, err = cluster.generateConnectionPoolerDeployment(cluster.ConnectionPooler[role])
+	_, err = cluster.createConnectionPooler(mockInstallLookupFunction)
 	if err != nil {
 		return nil, err
 	}
-	_, err = cluster.syncConnectionPoolerWorker(nil, &pg, Master)
-	if err != nil {
-		return nil, err
-	}
-	pvcList := CreatePVCs(namespace, clusterName, cluster.labelsSet(false), 2, "1Gi")
+	pvcList := CreatePVCs(namespace, clusterName, cluster.labelsSet(false), 2, "1Gi", cluster.annotationsSet(nil))
 	for _, pvc := range pvcList.Items {
 		cluster.KubeClient.PersistentVolumeClaims(namespace).Create(context.TODO(), &pvc, metav1.CreateOptions{})
+	}
+
+	err = cluster.Sync(&cluster.Postgresql)
+	if err != nil {
+		return nil, err
 	}
 
 	return cluster, nil
@@ -247,63 +243,82 @@ func TestInheritedAnnotations(t *testing.T) {
 	assert.NoError(t, err)
 
 	// pooler deployment annotations
-	_, err = cluster.syncConnectionPoolerWorker(nil, &cluster.Postgresql, Master)
-	assert.NoError(t, err)
 	err = checkPooler(false)
 	assert.NoError(t, err)
 
-	cluster.syncVolumes()
 	err = checkPvc(false)
 	assert.NoError(t, err)
 
 	// 2. Check annotation value change
-	cluster.ObjectMeta.Annotations["owned-by"] = "foo"
-	inheritedAnnotations = cluster.annotationsSet(nil)
 
-	cluster.syncStatefulSet()
+	// 2.1 Sync event
+	newSpec := cluster.Postgresql.DeepCopy()
+	newSpec.ObjectMeta.Annotations["owned-by"] = "fooSync"
+	inheritedAnnotations["owned-by"] = "fooSync"
+	err = cluster.Sync(newSpec)
+	assert.NoError(t, err)
+
 	err = checkSts(false)
 	assert.NoError(t, err)
 
-	cluster.syncServices()
 	err = checkSvc(false)
 	assert.NoError(t, err)
 
-	cluster.syncPodDisruptionBudget(false)
 	err = checkPdb(false)
 	assert.NoError(t, err)
 
-	_, err = cluster.syncConnectionPoolerWorker(nil, &cluster.Postgresql, Master)
-	assert.NoError(t, err)
 	err = checkPooler(false)
 	assert.NoError(t, err)
 
 	// PVC annotations + new PVC
-	cluster.KubeClient.PersistentVolumeClaims(namespace).Create(context.TODO(), &CreatePVCs(namespace, clusterName+"-2", filterLabels, 1, "1Gi").Items[0], metav1.CreateOptions{})
-	cluster.syncVolumes()
+	cluster.KubeClient.PersistentVolumeClaims(namespace).Create(context.TODO(), &CreatePVCs(namespace, clusterName+"-2", filterLabels, 1, "1Gi", cluster.annotationsSet(nil)).Items[0], metav1.CreateOptions{})
+	err = checkPvc(false)
+	assert.NoError(t, err)
+
+	// 2.2 Update event
+	newSpec = cluster.Postgresql.DeepCopy()
+	newSpec.ObjectMeta.Annotations["owned-by"] = "fooUpdate"
+	inheritedAnnotations["owned-by"] = "fooUpdate"
+
+	err = cluster.Update(&cluster.Postgresql, newSpec)
+	assert.NoError(t, err)
+
+	err = checkSts(false)
+	assert.NoError(t, err)
+
+	err = checkSvc(false)
+	assert.NoError(t, err)
+
+	err = checkPdb(false)
+	assert.NoError(t, err)
+
+	err = checkPooler(false)
+	assert.NoError(t, err)
+
+	// PVC annotations + new PVC
+	cluster.KubeClient.PersistentVolumeClaims(namespace).Create(context.TODO(), &CreatePVCs(namespace, clusterName+"-2", filterLabels, 1, "1Gi", cluster.annotationsSet(nil)).Items[0], metav1.CreateOptions{})
 	err = checkPvc(false)
 	assert.NoError(t, err)
 
 	// 3. Check removal of an inherited annotation
-	delete(cluster.ObjectMeta.Annotations, "owned-by")
+	newSpec = cluster.Postgresql.DeepCopy()
+	delete(newSpec.Annotations, "owned-by")
+	err = cluster.Update(&cluster.Postgresql, newSpec)
+	assert.NoError(t, err)
 
-	cluster.syncStatefulSet()
 	err = checkSts(true)
 	assert.NoError(t, err)
 
-	cluster.syncServices()
 	err = checkSvc(true)
 	assert.NoError(t, err)
 
-	cluster.syncPodDisruptionBudget(false)
 	err = checkPdb(true)
 	assert.NoError(t, err)
 
-	_, err = cluster.syncConnectionPoolerWorker(nil, &cluster.Postgresql, Master)
-	assert.NoError(t, err)
 	err = checkPooler(true)
 	assert.NoError(t, err)
 
-	cluster.syncVolumes()
+	cluster.syncVolumes(false)
 	err = checkPvc(true)
 	assert.NoError(t, err)
 }

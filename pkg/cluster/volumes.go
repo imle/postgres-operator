@@ -3,13 +3,13 @@ package cluster
 import (
 	"context"
 	"fmt"
-	"reflect"
 	"strconv"
 	"strings"
 
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/zalando/postgres-operator/pkg/spec"
@@ -19,7 +19,7 @@ import (
 	"github.com/zalando/postgres-operator/pkg/util/volumes"
 )
 
-func (c *Cluster) syncVolumes() error {
+func (c *Cluster) syncVolumes(annoChanged bool) error {
 	c.logger.Debugf("syncing volumes using %q storage resize mode", c.OpConfig.StorageResizeMode)
 	var err error
 
@@ -44,17 +44,17 @@ func (c *Cluster) syncVolumes() error {
 		}
 
 		// resize pvc to adjust filesystem size until better K8s support
-		if err = c.syncVolumeClaims(false); err != nil {
+		if err = c.syncVolumeClaims(false, annoChanged); err != nil {
 			err = fmt.Errorf("could not sync persistent volume claims: %v", err)
 			return err
 		}
 	} else if c.OpConfig.StorageResizeMode == "pvc" {
-		if err = c.syncVolumeClaims(false); err != nil {
+		if err = c.syncVolumeClaims(false, annoChanged); err != nil {
 			err = fmt.Errorf("could not sync persistent volume claims: %v", err)
 			return err
 		}
 	} else if c.OpConfig.StorageResizeMode == "ebs" {
-		if err = c.syncVolumeClaims(true); err != nil {
+		if err = c.syncVolumeClaims(true, annoChanged); err != nil {
 			err = fmt.Errorf("could not sync persistent volume claims: %v", err)
 			return err
 		}
@@ -70,7 +70,7 @@ func (c *Cluster) syncVolumes() error {
 		}
 	} else {
 		c.logger.Infof("Storage resize is disabled (storage_resize_mode is off). Skipping volume size sync.")
-		if err := c.syncVolumeClaims(true); err != nil {
+		if err := c.syncVolumeClaims(true, annoChanged); err != nil {
 			c.logger.Errorf("could not sync persistent volume claims: %v", err)
 		}
 	}
@@ -191,7 +191,7 @@ func (c *Cluster) populateVolumeMetaData() error {
 }
 
 // syncVolumeClaims reads all persistent volume claims and checks that their size matches the one declared in the statefulset.
-func (c *Cluster) syncVolumeClaims(noResize bool) error {
+func (c *Cluster) syncVolumeClaims(noResize bool, annoChanged bool) error {
 	c.setProcessName("syncing volume claims")
 
 	newSize, err := resource.ParseQuantity(c.Spec.Volume.Size)
@@ -218,13 +218,27 @@ func (c *Cluster) syncVolumeClaims(noResize bool) error {
 		}
 
 		newAnnotations := c.annotationsSet(nil)
-		if newAnnotations == nil {
-			newAnnotations = make(map[string]string)
-		}
-		if !reflect.DeepEqual(pvc.Annotations, newAnnotations) {
-			pvc.Annotations = newAnnotations
-			needsUpdate = true
-			c.logger.Debugf("persistent volume claim's annotations for volume %q needs to be updated", pvc.Name)
+		if annoChanged {
+			if hasDeletedAnnotaions(pvc.Annotations, newAnnotations) {
+				pvc.Annotations = newAnnotations
+				needsUpdate = true
+				c.logger.Debugf("persistent volume claim's annotations for volume %q needs to be updated", pvc.Name)
+			} else if !needsUpdate {
+				patchData, err := metaAnnotationsPatch(newAnnotations)
+				if err != nil {
+					return fmt.Errorf("could not form patch for the persistent volume claim's annotations for volume %q: %v", pvc.Name, err)
+				}
+				_, err = c.KubeClient.PersistentVolumeClaims(pvc.Namespace).Patch(
+					context.TODO(),
+					pvc.Name,
+					types.MergePatchType,
+					[]byte(patchData),
+					metav1.PatchOptions{},
+					"")
+				if err != nil {
+					return fmt.Errorf("could not patch connection pooler annotations %q: %v", patchData, err)
+				}
+			}
 		}
 
 		if needsUpdate {
@@ -234,7 +248,7 @@ func (c *Cluster) syncVolumeClaims(noResize bool) error {
 			}
 			c.logger.Debugf("successfully updated persistent volume claim %q", pvc.Name)
 		} else {
-			c.logger.Debugf("volume claim for volume %q do not require changes", pvc.Name)
+			c.logger.Debugf("volume claim for volume %q do not require updates", pvc.Name)
 		}
 	}
 

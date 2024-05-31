@@ -364,7 +364,7 @@ func TestConnectionPoolerCreateDeletion(t *testing.T) {
 	}
 
 	// Delete connection pooler via sync
-	_, err = cluster.syncConnectionPooler(oldSpec, newSpec, mockInstallLookupFunction)
+	_, err = cluster.syncConnectionPooler(oldSpec, newSpec, mockInstallLookupFunction, false)
 	if err != nil {
 		t.Errorf("%s: Cannot sync connection pooler, %s", testName, err)
 	}
@@ -656,7 +656,7 @@ func TestConnectionPoolerSync(t *testing.T) {
 		t.Logf("running test for %s [%s]", testName, tt.subTest)
 
 		reason, err := tt.cluster.syncConnectionPooler(tt.oldSpec,
-			tt.newSpec, mockInstallLookupFunction)
+			tt.newSpec, mockInstallLookupFunction, false)
 
 		if err := tt.check(tt.cluster, err, reason); err != nil {
 			t.Errorf("%s [%s]: Could not synchronize, %+v",
@@ -1028,7 +1028,7 @@ func TestPoolerTLS(t *testing.T) {
 		Role:           Master,
 	}
 
-	_, err = cluster.syncConnectionPoolerWorker(nil, &pg, Master)
+	_, err = cluster.syncConnectionPoolerWorker(nil, &pg, Master, false)
 	assert.NoError(t, err)
 
 	deploy, err := client.Deployments(namespace).Get(context.TODO(), cluster.connectionPoolerName(Master), metav1.GetOptions{})

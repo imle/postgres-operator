@@ -20,6 +20,7 @@ import (
 	v1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 )
 
 var requirePrimaryRestartWhenDecreased = []string{
@@ -38,6 +39,7 @@ func (c *Cluster) Sync(newSpec *acidv1.Postgresql) error {
 	defer c.mu.Unlock()
 
 	oldSpec := c.Postgresql
+	oldInheritedAnno := c.annotationsSet(nil)
 	c.setSpec(newSpec)
 
 	defer func() {
@@ -59,6 +61,11 @@ func (c *Cluster) Sync(newSpec *acidv1.Postgresql) error {
 		}
 	}()
 
+	inheritedAnnoChanged := false
+	if !reflect.DeepEqual(oldInheritedAnno, c.annotationsSet(nil)) {
+		inheritedAnnoChanged = true
+	}
+
 	if err = c.syncFinalizer(); err != nil {
 		c.logger.Debugf("could not sync finalizers: %v", err)
 	}
@@ -74,13 +81,13 @@ func (c *Cluster) Sync(newSpec *acidv1.Postgresql) error {
 		return err
 	}
 
-	if err = c.syncServices(); err != nil {
+	if err = c.syncServices(inheritedAnnoChanged); err != nil {
 		err = fmt.Errorf("could not sync services: %v", err)
 		return err
 	}
 
 	// sync volume may already transition volumes to gp3, if iops/throughput or type is specified
-	if err = c.syncVolumes(); err != nil {
+	if err = c.syncVolumes(inheritedAnnoChanged); err != nil {
 		return err
 	}
 
@@ -107,7 +114,7 @@ func (c *Cluster) Sync(newSpec *acidv1.Postgresql) error {
 	}
 
 	c.logger.Debug("syncing pod disruption budgets")
-	if err = c.syncPodDisruptionBudget(false); err != nil {
+	if err = c.syncPodDisruptionBudget(false, inheritedAnnoChanged); err != nil {
 		err = fmt.Errorf("could not sync pod disruption budget: %v", err)
 		return err
 	}
@@ -139,7 +146,7 @@ func (c *Cluster) Sync(newSpec *acidv1.Postgresql) error {
 	}
 
 	// sync connection pooler
-	if _, err = c.syncConnectionPooler(&oldSpec, newSpec, c.installLookupFunction); err != nil {
+	if _, err = c.syncConnectionPooler(&oldSpec, newSpec, c.installLookupFunction, inheritedAnnoChanged); err != nil {
 		return fmt.Errorf("could not sync connection pooler: %v", err)
 	}
 
@@ -173,7 +180,7 @@ func (c *Cluster) syncFinalizer() error {
 	return nil
 }
 
-func (c *Cluster) syncServices() error {
+func (c *Cluster) syncServices(annoChanged bool) error {
 	for _, role := range []PostgresRole{Master, Replica} {
 		c.logger.Debugf("syncing %s service", role)
 
@@ -182,7 +189,7 @@ func (c *Cluster) syncServices() error {
 				return fmt.Errorf("could not sync %s endpoint: %v", role, err)
 			}
 		}
-		if err := c.syncService(role); err != nil {
+		if err := c.syncService(role, annoChanged); err != nil {
 			return fmt.Errorf("could not sync %s service: %v", role, err)
 		}
 	}
@@ -190,7 +197,7 @@ func (c *Cluster) syncServices() error {
 	return nil
 }
 
-func (c *Cluster) syncService(role PostgresRole) error {
+func (c *Cluster) syncService(role PostgresRole, annoChanged bool) error {
 	var (
 		svc *v1.Service
 		err error
@@ -200,15 +207,12 @@ func (c *Cluster) syncService(role PostgresRole) error {
 	if svc, err = c.KubeClient.Services(c.Namespace).Get(context.TODO(), c.serviceName(role), metav1.GetOptions{}); err == nil {
 		c.Services[role] = svc
 		desiredSvc := c.generateService(role, &c.Spec)
-		if match, reason := c.compareServices(svc, desiredSvc); !match {
-			c.logServiceChanges(role, svc, desiredSvc, false, reason)
-			updatedSvc, err := c.updateService(role, svc, desiredSvc)
-			if err != nil {
-				return fmt.Errorf("could not update %s service to match desired state: %v", role, err)
-			}
-			c.Services[role] = updatedSvc
-			c.logger.Infof("%s service %q is in the desired state now", role, util.NameFromMeta(desiredSvc.ObjectMeta))
+		updatedSvc, err := c.updateService(role, svc, desiredSvc, annoChanged)
+		if err != nil {
+			return fmt.Errorf("could not update %s service to match desired state: %v", role, err)
 		}
+		c.Services[role] = updatedSvc
+		c.logger.Infof("%s service %q is in the desired state now", role, util.NameFromMeta(desiredSvc.ObjectMeta))
 		return nil
 	}
 	if !k8sutil.ResourceNotFound(err) {
@@ -267,7 +271,7 @@ func (c *Cluster) syncEndpoint(role PostgresRole) error {
 	return nil
 }
 
-func (c *Cluster) syncPodDisruptionBudget(isUpdate bool) error {
+func (c *Cluster) syncPodDisruptionBudget(isUpdate bool, annoChanged bool) error {
 	var (
 		pdb *policyv1.PodDisruptionBudget
 		err error
@@ -275,12 +279,33 @@ func (c *Cluster) syncPodDisruptionBudget(isUpdate bool) error {
 	if pdb, err = c.KubeClient.PodDisruptionBudgets(c.Namespace).Get(context.TODO(), c.podDisruptionBudgetName(), metav1.GetOptions{}); err == nil {
 		c.PodDisruptionBudget = pdb
 		newPDB := c.generatePodDisruptionBudget()
-		if match, reason := c.ComparePodDisruptionBudget(pdb, newPDB); !match {
+		match, reason := c.ComparePodDisruptionBudget(pdb, newPDB)
+		if match && annoChanged && hasDeletedAnnotaions(pdb.Annotations, newPDB.Annotations) {
+			match = false
+			reason = "new PDB's annotations does not match the current one:"
+		}
+		if !match {
 			c.logPDBChanges(pdb, newPDB, isUpdate, reason)
 			if err = c.updatePodDisruptionBudget(newPDB); err != nil {
 				return err
 			}
 		} else {
+			if annoChanged {
+				patchData, err := metaAnnotationsPatch(newPDB.Annotations)
+				if err != nil {
+					return fmt.Errorf("could not form patch for pod disruption budget's annotations: %v", err)
+				}
+				_, err = c.KubeClient.PodDisruptionBudgets(pdb.Namespace).Patch(
+					context.TODO(),
+					pdb.Name,
+					types.MergePatchType,
+					[]byte(patchData),
+					metav1.PatchOptions{},
+					"")
+				if err != nil {
+					return fmt.Errorf("could not patch connection pooler annotations %q: %v", patchData, err)
+				}
+			}
 			c.PodDisruptionBudget = pdb
 		}
 		return nil

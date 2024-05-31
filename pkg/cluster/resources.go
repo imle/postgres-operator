@@ -3,7 +3,6 @@ package cluster
 import (
 	"context"
 	"fmt"
-	"reflect"
 	"strconv"
 	"strings"
 
@@ -286,12 +285,36 @@ func (c *Cluster) createService(role PostgresRole) (*v1.Service, error) {
 	return service, nil
 }
 
-func (c *Cluster) updateService(role PostgresRole, oldService *v1.Service, newService *v1.Service) (*v1.Service, error) {
+func (c *Cluster) updateService(role PostgresRole, oldService *v1.Service, newService *v1.Service, annoChanged bool) (*v1.Service, error) {
 	var (
 		svc *v1.Service
 		err error
 	)
 
+	match, reason := c.compareServices(oldService, newService)
+	if match && annoChanged && hasDeletedAnnotaions(oldService.Annotations, newService.Annotations) {
+		match = false
+		reason = "new service's annotations does not match the current one"
+	}
+	if match && annoChanged {
+		patchData, err := metaAnnotationsPatch(newService.Annotations)
+		if err != nil {
+			return nil, fmt.Errorf("could not form patch for %s service annotations: %v", role, err)
+		}
+		svc, err = c.KubeClient.Services(oldService.Namespace).Patch(
+			context.TODO(),
+			oldService.Name,
+			types.MergePatchType,
+			[]byte(patchData),
+			metav1.PatchOptions{},
+			"")
+		if err != nil {
+			return nil, fmt.Errorf("could not patch %s service to match desired state: %v", role, err)
+		}
+		return svc, nil
+	}
+
+	c.logServiceChanges(role, oldService, newService, false, reason)
 	c.setProcessName("updating %v service", role)
 
 	serviceName := util.NameFromMeta(oldService.ObjectMeta)
@@ -300,7 +323,7 @@ func (c *Cluster) updateService(role PostgresRole, oldService *v1.Service, newSe
 	// patch does not work because of LoadBalancerSourceRanges field (even if set to nil)
 	oldServiceType := oldService.Spec.Type
 	newServiceType := newService.Spec.Type
-	if newServiceType == "ClusterIP" && newServiceType != oldServiceType || !reflect.DeepEqual(oldService.ObjectMeta.Annotations, newService.ObjectMeta.Annotations) {
+	if newServiceType == "ClusterIP" && newServiceType != oldServiceType || annoChanged {
 		newService.ResourceVersion = oldService.ResourceVersion
 		newService.Spec.ClusterIP = oldService.Spec.ClusterIP
 		svc, err = c.KubeClient.Services(serviceName.Namespace).Update(context.TODO(), newService, metav1.UpdateOptions{})
