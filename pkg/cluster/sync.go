@@ -20,7 +20,6 @@ import (
 	v1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/types"
 )
 
 var requirePrimaryRestartWhenDecreased = []string{
@@ -280,32 +279,12 @@ func (c *Cluster) syncPodDisruptionBudget(isUpdate bool, annoChanged bool) error
 		c.PodDisruptionBudget = pdb
 		newPDB := c.generatePodDisruptionBudget()
 		match, reason := c.ComparePodDisruptionBudget(pdb, newPDB)
-		if match && annoChanged && hasDeletedAnnotaions(pdb.Annotations, newPDB.Annotations) {
-			match = false
-			reason = "new PDB's annotations does not match the current one:"
-		}
-		if !match {
+		if match || annoChanged {
 			c.logPDBChanges(pdb, newPDB, isUpdate, reason)
 			if err = c.updatePodDisruptionBudget(newPDB); err != nil {
 				return err
 			}
 		} else {
-			if annoChanged {
-				patchData, err := metaAnnotationsPatch(newPDB.Annotations)
-				if err != nil {
-					return fmt.Errorf("could not form patch for pod disruption budget's annotations: %v", err)
-				}
-				_, err = c.KubeClient.PodDisruptionBudgets(pdb.Namespace).Patch(
-					context.TODO(),
-					pdb.Name,
-					types.MergePatchType,
-					[]byte(patchData),
-					metav1.PatchOptions{},
-					"")
-				if err != nil {
-					return fmt.Errorf("could not patch connection pooler annotations %q: %v", patchData, err)
-				}
-			}
 			c.PodDisruptionBudget = pdb
 		}
 		return nil
