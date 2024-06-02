@@ -401,7 +401,7 @@ func (c *Cluster) Create() (err error) {
 
 	if len(c.Spec.Streams) > 0 {
 		// creating streams requires syncing the statefulset first
-		err = c.syncStatefulSet()
+		err = c.syncStatefulSet(true)
 		if err != nil {
 			return fmt.Errorf("could not sync statefulset: %v", err)
 		}
@@ -824,7 +824,9 @@ func (c *Cluster) ComparePodDisruptionBudget(cur, new *apipolicyv1.PodDisruption
 	if match := reflect.DeepEqual(new.Spec, cur.Spec); !match {
 		return false, "new PDB spec does not match the current one"
 	}
-
+	if changed, reason := c.compareAnnotations(cur.Annotations, new.Annotations); changed {
+		return false, "new PDB's annotations does not match the current one:" + reason
+	}
 	return true, ""
 }
 
@@ -894,8 +896,6 @@ func (c *Cluster) Update(oldSpec, newSpec *acidv1.Postgresql) error {
 	updateFailed := false
 	userInitFailed := false
 	syncStatefulSet := false
-	inheritedAnnoChanged := false
-	oldInheritedAnno := c.annotationsSet(nil)
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -933,19 +933,10 @@ func (c *Cluster) Update(oldSpec, newSpec *acidv1.Postgresql) error {
 		newSpec.Spec.PostgresqlParam.PgVersion = oldSpec.Spec.PostgresqlParam.PgVersion
 	}
 
-	if !reflect.DeepEqual(oldInheritedAnno, c.annotationsSet(nil)) {
-		inheritedAnnoChanged = true
-		syncStatefulSet = true
-	}
-
 	// Service
-	if !reflect.DeepEqual(c.generateService(Master, &oldSpec.Spec), c.generateService(Master, &newSpec.Spec)) ||
-		!reflect.DeepEqual(c.generateService(Replica, &oldSpec.Spec), c.generateService(Replica, &newSpec.Spec)) ||
-		inheritedAnnoChanged {
-		if err := c.syncServices(inheritedAnnoChanged); err != nil {
-			c.logger.Errorf("could not sync services: %v", err)
-			updateFailed = true
-		}
+	if err := c.syncServices(); err != nil {
+		c.logger.Errorf("could not sync services: %v", err)
+		updateFailed = true
 	}
 
 	// Users
@@ -984,7 +975,7 @@ func (c *Cluster) Update(oldSpec, newSpec *acidv1.Postgresql) error {
 
 	// Volume
 	if c.OpConfig.StorageResizeMode != "off" {
-		c.syncVolumes(inheritedAnnoChanged)
+		c.syncVolumes()
 	} else {
 		c.logger.Infof("Storage resize is disabled (storage_resize_mode is off). Skipping volume size sync.")
 	}
@@ -996,29 +987,11 @@ func (c *Cluster) Update(oldSpec, newSpec *acidv1.Postgresql) error {
 
 	// Statefulset
 	func() {
-		oldSs, err := c.generateStatefulSet(&oldSpec.Spec)
-		if err != nil {
-			c.logger.Errorf("could not generate old statefulset spec: %v", err)
+		if err := c.syncStatefulSet(syncStatefulSet); err != nil {
+			c.logger.Errorf("could not sync statefulsets: %v", err)
 			updateFailed = true
-			return
 		}
-
-		newSs, err := c.generateStatefulSet(&newSpec.Spec)
-		if err != nil {
-			c.logger.Errorf("could not generate new statefulset spec: %v", err)
-			updateFailed = true
-			return
-		}
-
-		if syncStatefulSet || !reflect.DeepEqual(oldSs, newSs) {
-			c.logger.Debugf("syncing statefulsets")
-			syncStatefulSet = false
-			// TODO: avoid generating the StatefulSet object twice by passing it to syncStatefulSet
-			if err := c.syncStatefulSet(); err != nil {
-				c.logger.Errorf("could not sync statefulsets: %v", err)
-				updateFailed = true
-			}
-		}
+		syncStatefulSet = false
 	}()
 
 	// add or remove standby_cluster section from Patroni config depending on changes in standby section
@@ -1029,12 +1002,10 @@ func (c *Cluster) Update(oldSpec, newSpec *acidv1.Postgresql) error {
 	}
 
 	// pod disruption budget
-	if oldSpec.Spec.NumberOfInstances != newSpec.Spec.NumberOfInstances || inheritedAnnoChanged {
-		c.logger.Debug("syncing pod disruption budgets")
-		if err := c.syncPodDisruptionBudget(true, inheritedAnnoChanged); err != nil {
-			c.logger.Errorf("could not sync pod disruption budget: %v", err)
-			updateFailed = true
-		}
+	c.logger.Debug("syncing pod disruption budgets")
+	if err := c.syncPodDisruptionBudget(true); err != nil {
+		c.logger.Errorf("could not sync pod disruption budget: %v", err)
+		updateFailed = true
 	}
 
 	// logical backup job
@@ -1103,7 +1074,7 @@ func (c *Cluster) Update(oldSpec, newSpec *acidv1.Postgresql) error {
 	// need to process. In the future we may want to do this more careful and
 	// check which databases we need to process, but even repeating the whole
 	// installation process should be good enough.
-	if _, err := c.syncConnectionPooler(oldSpec, newSpec, c.installLookupFunction, inheritedAnnoChanged); err != nil {
+	if _, err := c.syncConnectionPooler(oldSpec, newSpec, c.installLookupFunction); err != nil {
 		c.logger.Errorf("could not sync connection pooler: %v", err)
 		updateFailed = true
 	}

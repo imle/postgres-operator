@@ -3,6 +3,7 @@ package cluster
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"strconv"
 	"strings"
 
@@ -285,18 +286,15 @@ func (c *Cluster) createService(role PostgresRole) (*v1.Service, error) {
 	return service, nil
 }
 
-func (c *Cluster) updateService(role PostgresRole, oldService *v1.Service, newService *v1.Service, annoChanged bool) (*v1.Service, error) {
+func (c *Cluster) updateService(role PostgresRole, oldService *v1.Service, newService *v1.Service) (*v1.Service, error) {
 	var (
 		svc *v1.Service
 		err error
 	)
 
 	match, reason := c.compareServices(oldService, newService)
+	annoChanged := !reflect.DeepEqual(oldService.Annotations, newService.Annotations)
 	if match && annoChanged && hasDeletedAnnotaions(oldService.Annotations, newService.Annotations) {
-		match = false
-		reason = "new service's annotations does not match the current one"
-	}
-	if match && annoChanged {
 		patchData, err := metaAnnotationsPatch(newService.Annotations)
 		if err != nil {
 			return nil, fmt.Errorf("could not form patch for %s service annotations: %v", role, err)

@@ -38,7 +38,6 @@ func (c *Cluster) Sync(newSpec *acidv1.Postgresql) error {
 	defer c.mu.Unlock()
 
 	oldSpec := c.Postgresql
-	oldInheritedAnno := c.annotationsSet(nil)
 	c.setSpec(newSpec)
 
 	defer func() {
@@ -60,11 +59,6 @@ func (c *Cluster) Sync(newSpec *acidv1.Postgresql) error {
 		}
 	}()
 
-	inheritedAnnoChanged := false
-	if !reflect.DeepEqual(oldInheritedAnno, c.annotationsSet(nil)) {
-		inheritedAnnoChanged = true
-	}
-
 	if err = c.syncFinalizer(); err != nil {
 		c.logger.Debugf("could not sync finalizers: %v", err)
 	}
@@ -80,13 +74,13 @@ func (c *Cluster) Sync(newSpec *acidv1.Postgresql) error {
 		return err
 	}
 
-	if err = c.syncServices(inheritedAnnoChanged); err != nil {
+	if err = c.syncServices(); err != nil {
 		err = fmt.Errorf("could not sync services: %v", err)
 		return err
 	}
 
 	// sync volume may already transition volumes to gp3, if iops/throughput or type is specified
-	if err = c.syncVolumes(inheritedAnnoChanged); err != nil {
+	if err = c.syncVolumes(); err != nil {
 		return err
 	}
 
@@ -98,7 +92,7 @@ func (c *Cluster) Sync(newSpec *acidv1.Postgresql) error {
 	}
 
 	c.logger.Debug("syncing statefulsets")
-	if err = c.syncStatefulSet(); err != nil {
+	if err = c.syncStatefulSet(true); err != nil {
 		if !k8sutil.ResourceAlreadyExists(err) {
 			err = fmt.Errorf("could not sync statefulsets: %v", err)
 			return err
@@ -113,7 +107,7 @@ func (c *Cluster) Sync(newSpec *acidv1.Postgresql) error {
 	}
 
 	c.logger.Debug("syncing pod disruption budgets")
-	if err = c.syncPodDisruptionBudget(false, inheritedAnnoChanged); err != nil {
+	if err = c.syncPodDisruptionBudget(false); err != nil {
 		err = fmt.Errorf("could not sync pod disruption budget: %v", err)
 		return err
 	}
@@ -145,7 +139,7 @@ func (c *Cluster) Sync(newSpec *acidv1.Postgresql) error {
 	}
 
 	// sync connection pooler
-	if _, err = c.syncConnectionPooler(&oldSpec, newSpec, c.installLookupFunction, inheritedAnnoChanged); err != nil {
+	if _, err = c.syncConnectionPooler(&oldSpec, newSpec, c.installLookupFunction); err != nil {
 		return fmt.Errorf("could not sync connection pooler: %v", err)
 	}
 
@@ -179,7 +173,7 @@ func (c *Cluster) syncFinalizer() error {
 	return nil
 }
 
-func (c *Cluster) syncServices(annoChanged bool) error {
+func (c *Cluster) syncServices() error {
 	for _, role := range []PostgresRole{Master, Replica} {
 		c.logger.Debugf("syncing %s service", role)
 
@@ -188,7 +182,7 @@ func (c *Cluster) syncServices(annoChanged bool) error {
 				return fmt.Errorf("could not sync %s endpoint: %v", role, err)
 			}
 		}
-		if err := c.syncService(role, annoChanged); err != nil {
+		if err := c.syncService(role); err != nil {
 			return fmt.Errorf("could not sync %s service: %v", role, err)
 		}
 	}
@@ -196,7 +190,7 @@ func (c *Cluster) syncServices(annoChanged bool) error {
 	return nil
 }
 
-func (c *Cluster) syncService(role PostgresRole, annoChanged bool) error {
+func (c *Cluster) syncService(role PostgresRole) error {
 	var (
 		svc *v1.Service
 		err error
@@ -206,7 +200,7 @@ func (c *Cluster) syncService(role PostgresRole, annoChanged bool) error {
 	if svc, err = c.KubeClient.Services(c.Namespace).Get(context.TODO(), c.serviceName(role), metav1.GetOptions{}); err == nil {
 		c.Services[role] = svc
 		desiredSvc := c.generateService(role, &c.Spec)
-		updatedSvc, err := c.updateService(role, svc, desiredSvc, annoChanged)
+		updatedSvc, err := c.updateService(role, svc, desiredSvc)
 		if err != nil {
 			return fmt.Errorf("could not update %s service to match desired state: %v", role, err)
 		}
@@ -270,7 +264,7 @@ func (c *Cluster) syncEndpoint(role PostgresRole) error {
 	return nil
 }
 
-func (c *Cluster) syncPodDisruptionBudget(isUpdate bool, annoChanged bool) error {
+func (c *Cluster) syncPodDisruptionBudget(isUpdate bool) error {
 	var (
 		pdb *policyv1.PodDisruptionBudget
 		err error
@@ -279,7 +273,7 @@ func (c *Cluster) syncPodDisruptionBudget(isUpdate bool, annoChanged bool) error
 		c.PodDisruptionBudget = pdb
 		newPDB := c.generatePodDisruptionBudget()
 		match, reason := c.ComparePodDisruptionBudget(pdb, newPDB)
-		if match || annoChanged {
+		if !match {
 			c.logPDBChanges(pdb, newPDB, isUpdate, reason)
 			if err = c.updatePodDisruptionBudget(newPDB); err != nil {
 				return err
@@ -313,7 +307,7 @@ func (c *Cluster) syncPodDisruptionBudget(isUpdate bool, annoChanged bool) error
 	return nil
 }
 
-func (c *Cluster) syncStatefulSet() error {
+func (c *Cluster) syncStatefulSet(force bool) error {
 	var (
 		restartWait         uint32
 		configPatched       bool
@@ -330,9 +324,13 @@ func (c *Cluster) syncStatefulSet() error {
 
 	// NB: Be careful to consider the codepath that acts on podsRollingUpdateRequired before returning early.
 	sset, err := c.KubeClient.StatefulSets(c.Namespace).Get(context.TODO(), c.statefulSetName(), metav1.GetOptions{})
+	if err != nil && !k8sutil.ResourceNotFound(err) {
+		return fmt.Errorf("error during reading of statefulset: %v", err)
+	}
+
 	if err != nil {
-		if !k8sutil.ResourceNotFound(err) {
-			return fmt.Errorf("error during reading of statefulset: %v", err)
+		if !force {
+			return nil
 		}
 		// statefulset does not exist, try to re-create it
 		c.Statefulset = nil
@@ -358,6 +356,14 @@ func (c *Cluster) syncStatefulSet() error {
 		c.logger.Infof("created missing statefulset %q", util.NameFromMeta(sset.ObjectMeta))
 
 	} else {
+		desiredSts, err := c.generateStatefulSet(&c.Spec)
+		if err != nil {
+			return fmt.Errorf("could not generate statefulset: %v", err)
+		}
+		if reflect.DeepEqual(sset, desiredSts) && !force {
+			return nil
+		}
+		c.logger.Debugf("syncing statefulsets")
 		// check if there are still pods with a rolling update flag
 		for _, pod := range pods {
 			if c.getRollingUpdateFlagFromPod(&pod) {
@@ -377,11 +383,6 @@ func (c *Cluster) syncStatefulSet() error {
 
 		// statefulset is already there, make sure we use its definition in order to compare with the spec.
 		c.Statefulset = sset
-
-		desiredSts, err := c.generateStatefulSet(&c.Spec)
-		if err != nil {
-			return fmt.Errorf("could not generate statefulset: %v", err)
-		}
 
 		cmp := c.compareStatefulSetWith(desiredSts)
 		if !cmp.match {

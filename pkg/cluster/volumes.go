@@ -3,6 +3,7 @@ package cluster
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"strconv"
 	"strings"
 
@@ -19,7 +20,7 @@ import (
 	"github.com/zalando/postgres-operator/pkg/util/volumes"
 )
 
-func (c *Cluster) syncVolumes(annoChanged bool) error {
+func (c *Cluster) syncVolumes() error {
 	c.logger.Debugf("syncing volumes using %q storage resize mode", c.OpConfig.StorageResizeMode)
 	var err error
 
@@ -44,17 +45,17 @@ func (c *Cluster) syncVolumes(annoChanged bool) error {
 		}
 
 		// resize pvc to adjust filesystem size until better K8s support
-		if err = c.syncVolumeClaims(false, annoChanged); err != nil {
+		if err = c.syncVolumeClaims(false); err != nil {
 			err = fmt.Errorf("could not sync persistent volume claims: %v", err)
 			return err
 		}
 	} else if c.OpConfig.StorageResizeMode == "pvc" {
-		if err = c.syncVolumeClaims(false, annoChanged); err != nil {
+		if err = c.syncVolumeClaims(false); err != nil {
 			err = fmt.Errorf("could not sync persistent volume claims: %v", err)
 			return err
 		}
 	} else if c.OpConfig.StorageResizeMode == "ebs" {
-		if err = c.syncVolumeClaims(true, annoChanged); err != nil {
+		if err = c.syncVolumeClaims(true); err != nil {
 			err = fmt.Errorf("could not sync persistent volume claims: %v", err)
 			return err
 		}
@@ -70,7 +71,7 @@ func (c *Cluster) syncVolumes(annoChanged bool) error {
 		}
 	} else {
 		c.logger.Infof("Storage resize is disabled (storage_resize_mode is off). Skipping volume size sync.")
-		if err := c.syncVolumeClaims(true, annoChanged); err != nil {
+		if err := c.syncVolumeClaims(true); err != nil {
 			c.logger.Errorf("could not sync persistent volume claims: %v", err)
 		}
 	}
@@ -191,7 +192,7 @@ func (c *Cluster) populateVolumeMetaData() error {
 }
 
 // syncVolumeClaims reads all persistent volume claims and checks that their size matches the one declared in the statefulset.
-func (c *Cluster) syncVolumeClaims(noResize bool, annoChanged bool) error {
+func (c *Cluster) syncVolumeClaims(noResize bool) error {
 	c.setProcessName("syncing volume claims")
 
 	newSize, err := resource.ParseQuantity(c.Spec.Volume.Size)
@@ -218,7 +219,7 @@ func (c *Cluster) syncVolumeClaims(noResize bool, annoChanged bool) error {
 		}
 
 		newAnnotations := c.annotationsSet(nil)
-		if annoChanged {
+		if !reflect.DeepEqual(pvc.Annotations, newAnnotations) {
 			if hasDeletedAnnotaions(pvc.Annotations, newAnnotations) {
 				pvc.Annotations = newAnnotations
 				needsUpdate = true

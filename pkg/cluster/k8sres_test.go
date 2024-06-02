@@ -2717,14 +2717,14 @@ func TestEnableLoadBalancers(t *testing.T) {
 		cluster.ConnectionPooler = map[PostgresRole]*ConnectionPoolerObjects{}
 		generatedServices := make([]v1.ServiceSpec, 0)
 		for _, role := range roles {
-			cluster.syncService(role, false)
+			cluster.syncService(role)
 			cluster.ConnectionPooler[role] = &ConnectionPoolerObjects{
 				Name:        cluster.connectionPoolerName(role),
 				ClusterName: cluster.Name,
 				Namespace:   cluster.Namespace,
 				Role:        role,
 			}
-			cluster.syncConnectionPoolerWorker(&tt.pgSpec, &tt.pgSpec, role, false)
+			cluster.syncConnectionPoolerWorker(&tt.pgSpec, &tt.pgSpec, role)
 			generatedServices = append(generatedServices, cluster.Services[role].Spec)
 			generatedServices = append(generatedServices, cluster.ConnectionPooler[role].Service.Spec)
 		}
@@ -3306,7 +3306,7 @@ func TestGenerateResourceRequirements(t *testing.T) {
 		cluster.Namespace = namespace
 		_, err := cluster.createStatefulSet()
 		if k8sutil.ResourceAlreadyExists(err) {
-			err = cluster.syncStatefulSet()
+			err = cluster.syncStatefulSet(true)
 		}
 		assert.NoError(t, err)
 

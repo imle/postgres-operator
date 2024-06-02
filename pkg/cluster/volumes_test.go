@@ -86,7 +86,7 @@ func TestResizeVolumeClaim(t *testing.T) {
 	}
 
 	// test resizing
-	cluster.syncVolumes(false)
+	cluster.syncVolumes()
 
 	pvcs, err := cluster.listPersistentVolumeClaims()
 	assert.NoError(t, err)
@@ -335,7 +335,7 @@ func TestMigrateGp3Support(t *testing.T) {
 	// resizer.EXPECT().ModifyVolume(gomock.Eq("ebs-volume-3"), gomock.Eq(aws.String("gp3")), gomock.Any(), gomock.Any(), gomock.Any()).Return(nil)
 
 	cluster.VolumeResizer = resizer
-	cluster.syncVolumes(false)
+	cluster.syncVolumes()
 }
 
 func TestManualGp2Gp3Support(t *testing.T) {
@@ -389,7 +389,7 @@ func TestManualGp2Gp3Support(t *testing.T) {
 	resizer.EXPECT().ModifyVolume(gomock.Eq("ebs-volume-2"), gomock.Eq(aws.String("gp3")), gomock.Nil(), gomock.Eq(aws.Int64(6000)), gomock.Eq(aws.Int64(275))).Return(nil)
 
 	cluster.VolumeResizer = resizer
-	cluster.syncVolumes(false)
+	cluster.syncVolumes()
 }
 
 func TestDontTouchType(t *testing.T) {
@@ -448,5 +448,5 @@ func TestDontTouchType(t *testing.T) {
 	resizer.EXPECT().ModifyVolume(gomock.Eq("ebs-volume-2"), gomock.Nil(), gomock.Eq(aws.Int64(177)), gomock.Nil(), gomock.Nil()).Return(nil)
 
 	cluster.VolumeResizer = resizer
-	cluster.syncVolumes(false)
+	cluster.syncVolumes()
 }
