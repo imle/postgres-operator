@@ -1096,6 +1096,23 @@ func (c *Cluster) syncConnectionPoolerWorker(oldSpec, newSpec *acidv1.Postgresql
 			if err != nil {
 				return nil, fmt.Errorf("could not delete pooler pod: %v", err)
 			}
+		} else if changed, _ := c.compareAnnotations(pod.ObjectMeta.Annotations, deployment.Spec.Template.Annotations); changed {
+			if hasDeletedAnnotaions(pod.ObjectMeta.Annotations, deployment.Spec.Template.Annotations) {
+				pod.ObjectMeta.Annotations = deployment.Spec.Template.Annotations
+				_, err := c.KubeClient.Pods(pod.Namespace).Update(context.TODO(), &pod, metav1.UpdateOptions{})
+				if err != nil {
+					return nil, fmt.Errorf("could not update annotations for pod %q: %v", pod.Name, err)
+				}
+			} else {
+				patchData, err := metaAnnotationsPatch(deployment.Spec.Template.Annotations)
+				if err != nil {
+					return nil, fmt.Errorf("could not form patch for %s pod annotations: %v", pod.Name, err)
+				}
+				_, err = c.KubeClient.Pods(pod.Namespace).Patch(context.TODO(), pod.Name, types.MergePatchType, patchData, metav1.PatchOptions{})
+				if err != nil {
+					return nil, fmt.Errorf("could not patch annotations for pod %q: %v", pod.Name, err)
+				}
+			}
 		}
 	}
 

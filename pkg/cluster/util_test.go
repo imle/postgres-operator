@@ -1,19 +1,27 @@
 package cluster
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"io"
+	"net/http"
 	"reflect"
 	"testing"
 	"time"
 
+	"github.com/golang/mock/gomock"
 	"github.com/stretchr/testify/assert"
+	"github.com/zalando/postgres-operator/mocks"
 	acidv1 "github.com/zalando/postgres-operator/pkg/apis/acid.zalan.do/v1"
 	fakeacidv1 "github.com/zalando/postgres-operator/pkg/generated/clientset/versioned/fake"
 	"github.com/zalando/postgres-operator/pkg/util/config"
 	"github.com/zalando/postgres-operator/pkg/util/k8sutil"
+	"github.com/zalando/postgres-operator/pkg/util/patroni"
 	appsv1 "k8s.io/api/apps/v1"
+	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	k8sFake "k8s.io/client-go/kubernetes/fake"
 )
 
@@ -35,14 +43,38 @@ func newFakeK8sAnnotationsClient() (k8sutil.KubernetesClient, *k8sFake.Clientset
 	}, clientSet
 }
 
-func newInheritedAnnotationsCluster(client k8sutil.KubernetesClient) (*Cluster, error) {
-	annotationValue := "acid"
+func createPods(cluster *Cluster) []v1.Pod {
+	podsList := make([]v1.Pod, 0)
+	for i, role := range []PostgresRole{Master, Replica} {
+		podsList = append(podsList, v1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      fmt.Sprintf("%s-%d", clusterName, i),
+				Namespace: namespace,
+				Labels: map[string]string{
+					"application":  "spilo",
+					"cluster-name": clusterName,
+					"spilo-role":   string(role),
+				},
+			},
+		})
+		podsList = append(podsList, v1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      fmt.Sprintf("%s-pooler-%s", clusterName, role),
+				Namespace: namespace,
+				Labels:    cluster.connectionPoolerLabels(role, true).MatchLabels,
+			},
+		})
+	}
 
+	return podsList
+}
+
+func newInheritedAnnotationsCluster(client k8sutil.KubernetesClient) (*Cluster, error) {
 	pg := acidv1.Postgresql{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: clusterName,
 			Annotations: map[string]string{
-				"owned-by": annotationValue,
+				"owned-by": "acid",
 				"foo":      "bar",
 			},
 		},
@@ -58,6 +90,8 @@ func newInheritedAnnotationsCluster(client k8sutil.KubernetesClient) (*Cluster, 
 	cluster := New(
 		Config{
 			OpConfig: config.Config{
+				PatroniAPICheckInterval: time.Duration(1),
+				PatroniAPICheckTimeout:  time.Duration(5),
 				ConnectionPooler: config.ConnectionPooler{
 					ConnectionPoolerDefaultCPURequest:    "100m",
 					ConnectionPoolerDefaultCPULimit:      "100m",
@@ -104,17 +138,33 @@ func newInheritedAnnotationsCluster(client k8sutil.KubernetesClient) (*Cluster, 
 		cluster.KubeClient.PersistentVolumeClaims(namespace).Create(context.TODO(), &pvc, metav1.CreateOptions{})
 	}
 
-	err = cluster.Sync(&cluster.Postgresql)
-	if err != nil {
-		return nil, err
+	podsList := createPods(cluster)
+	for _, pod := range podsList {
+		cluster.KubeClient.Pods(namespace).Create(context.TODO(), &pod, metav1.CreateOptions{})
 	}
 
 	return cluster, nil
 }
 
 func TestInheritedAnnotations(t *testing.T) {
+	// mocks
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
 	client, _ := newFakeK8sAnnotationsClient()
+	mockClient := mocks.NewMockHTTPClient(ctrl)
+
 	cluster, err := newInheritedAnnotationsCluster(client)
+	assert.NoError(t, err)
+
+	configJson := `{"postgresql": {"parameters": {"log_min_duration_statement": 200, "max_connections": 50}}}, "ttl": 20}`
+	response := http.Response{
+		StatusCode: 200,
+		Body:       io.NopCloser(bytes.NewReader([]byte(configJson))),
+	}
+	mockClient.EXPECT().Do(gomock.Any()).Return(&response, nil).AnyTimes()
+	cluster.patroni = patroni.New(patroniLogger, mockClient)
+
+	err = cluster.Sync(&cluster.Postgresql)
 	assert.NoError(t, err)
 
 	// test annotationsSet function
@@ -141,7 +191,6 @@ func TestInheritedAnnotations(t *testing.T) {
 		return nil
 	}
 
-	// statefulset annotations
 	checkSts := func(isRemoved bool) error {
 		stsList, err := client.StatefulSets(namespace).List(context.TODO(), listOptions)
 		if err != nil {
@@ -170,7 +219,23 @@ func TestInheritedAnnotations(t *testing.T) {
 		return nil
 	}
 
-	// service annotations
+	checkPods := func(isRemoved bool, labelSelector metav1.ListOptions) error {
+		checkFunc := checkInheritedAnnotations
+		if isRemoved {
+			checkFunc = checkAnnotationsRemoved
+		}
+		podList, err := client.Pods(namespace).List(context.TODO(), labelSelector)
+		if err != nil {
+			return err
+		}
+		for _, pod := range podList.Items {
+			if err := checkFunc(pod.ObjectMeta.Annotations, pod.ObjectMeta.Name, "Pod"); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+
 	checkSvc := func(isRemoved bool) error {
 		svcList, err := client.Services(namespace).List(context.TODO(), listOptions)
 		if err != nil {
@@ -189,7 +254,6 @@ func TestInheritedAnnotations(t *testing.T) {
 		return nil
 	}
 
-	// pod disruption budget annotations
 	checkPdb := func(isRemoved bool) error {
 		pdbList, err := client.PodDisruptionBudgets(namespace).List(context.TODO(), listOptions)
 		if err != nil {
@@ -208,7 +272,6 @@ func TestInheritedAnnotations(t *testing.T) {
 		return nil
 	}
 
-	// PVC annotations
 	checkPvc := func(isRemoved bool) error {
 		pvcs, err := cluster.listPersistentVolumeClaims()
 		if err != nil {
@@ -233,6 +296,10 @@ func TestInheritedAnnotations(t *testing.T) {
 			if isRemoved {
 				checkFunc = checkAnnotationsRemoved
 			}
+			poolerListOptions := metav1.ListOptions{
+				LabelSelector: labels.Set(cluster.connectionPoolerLabels(role, true).MatchLabels).String(),
+			}
+
 			var deploy *appsv1.Deployment
 
 			if deploy, err = client.Deployments(namespace).Get(context.TODO(), cluster.connectionPoolerName(role), metav1.GetOptions{}); err != nil {
@@ -250,12 +317,21 @@ func TestInheritedAnnotations(t *testing.T) {
 			if err := checkFunc(deploy.Spec.Template.ObjectMeta.Annotations, deploy.ObjectMeta.Name, "Pooler pod template"); err != nil {
 				return err
 			}
+
+			if err := checkPods(isRemoved, poolerListOptions); err != nil {
+				return err
+			}
 		}
 		return nil
 	}
 
+	// Finally, tests!
+
 	// 1. Check initial state
 	err = checkSts(false)
+	assert.NoError(t, err)
+
+	err = checkPods(false, listOptions)
 	assert.NoError(t, err)
 
 	err = checkSvc(false)
@@ -283,6 +359,9 @@ func TestInheritedAnnotations(t *testing.T) {
 	err = checkSts(false)
 	assert.NoError(t, err)
 
+	err = checkPods(false, listOptions)
+	assert.NoError(t, err)
+
 	err = checkSvc(false)
 	assert.NoError(t, err)
 
@@ -308,6 +387,9 @@ func TestInheritedAnnotations(t *testing.T) {
 	err = checkSts(false)
 	assert.NoError(t, err)
 
+	err = checkPods(false, listOptions)
+	assert.NoError(t, err)
+
 	err = checkSvc(false)
 	assert.NoError(t, err)
 
@@ -325,12 +407,15 @@ func TestInheritedAnnotations(t *testing.T) {
 	// 3. Check removal of an inherited annotation
 	newSpec = cluster.Postgresql.DeepCopy()
 
-	// remove parameter from operator config
+	// 3.1 remove parameter from operator config
 	cluster.OpConfig.InheritedAnnotations = nil
 	err = cluster.Sync(newSpec)
 	assert.NoError(t, err)
 
 	err = checkSts(true)
+	assert.NoError(t, err)
+
+	err = checkPods(true, listOptions)
 	assert.NoError(t, err)
 
 	err = checkSvc(true)
@@ -349,12 +434,15 @@ func TestInheritedAnnotations(t *testing.T) {
 	err = cluster.Sync(newSpec)
 	assert.NoError(t, err)
 
-	// delete value for the inherited annotation
+	// 3.2 delete value for the inherited annotation
 	delete(newSpec.Annotations, "owned-by")
 	err = cluster.Update(&cluster.Postgresql, newSpec)
 	assert.NoError(t, err)
 
 	err = checkSts(true)
+	assert.NoError(t, err)
+
+	err = checkPods(true, listOptions)
 	assert.NoError(t, err)
 
 	err = checkSvc(true)
