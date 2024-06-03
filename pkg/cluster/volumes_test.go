@@ -77,9 +77,9 @@ func TestResizeVolumeClaim(t *testing.T) {
 	cluster.Spec.Volume.Size = newVolumeSize
 
 	// define and create PVCs for 1Gi volumes
-	pvcList := CreatePVCs(namespace, clusterName, filterLabels, 2, "1Gi", cluster.annotationsSet(nil))
+	pvcList := CreatePVCs(namespace, clusterName, filterLabels, 2, "1Gi")
 	// add another PVC with different cluster name
-	pvcList.Items = append(pvcList.Items, CreatePVCs(namespace, clusterName+"-2", labels.Set{}, 1, "1Gi", nil).Items[0])
+	pvcList.Items = append(pvcList.Items, CreatePVCs(namespace, clusterName+"-2", labels.Set{}, 1, "1Gi").Items[0])
 
 	for _, pvc := range pvcList.Items {
 		cluster.KubeClient.PersistentVolumeClaims(namespace).Create(context.TODO(), &pvc, metav1.CreateOptions{})
@@ -150,7 +150,7 @@ func TestQuantityToGigabyte(t *testing.T) {
 	}
 }
 
-func CreatePVCs(namespace string, clusterName string, labels labels.Set, n int, size string, annotations map[string]string) v1.PersistentVolumeClaimList {
+func CreatePVCs(namespace string, clusterName string, labels labels.Set, n int, size string) v1.PersistentVolumeClaimList {
 	// define and create PVCs for 1Gi volumes
 	storage1Gi, _ := resource.ParseQuantity(size)
 	pvcList := v1.PersistentVolumeClaimList{
@@ -160,10 +160,9 @@ func CreatePVCs(namespace string, clusterName string, labels labels.Set, n int, 
 	for i := 0; i < n; i++ {
 		pvc := v1.PersistentVolumeClaim{
 			ObjectMeta: metav1.ObjectMeta{
-				Name:        fmt.Sprintf("%s-%s-%d", constants.DataVolumeName, clusterName, i),
-				Namespace:   namespace,
-				Labels:      labels,
-				Annotations: annotations,
+				Name:      fmt.Sprintf("%s-%s-%d", constants.DataVolumeName, clusterName, i),
+				Namespace: namespace,
+				Labels:    labels,
 			},
 			Spec: v1.PersistentVolumeClaimSpec{
 				Resources: v1.ResourceRequirements{

@@ -133,7 +133,7 @@ func newInheritedAnnotationsCluster(client k8sutil.KubernetesClient) (*Cluster, 
 	if err != nil {
 		return nil, err
 	}
-	pvcList := CreatePVCs(namespace, clusterName, cluster.labelsSet(false), 2, "1Gi", cluster.annotationsSet(nil))
+	pvcList := CreatePVCs(namespace, clusterName, cluster.labelsSet(false), 2, "1Gi")
 	for _, pvc := range pvcList.Items {
 		cluster.KubeClient.PersistentVolumeClaims(namespace).Create(context.TODO(), &pvc, metav1.CreateOptions{})
 	}
@@ -353,6 +353,8 @@ func TestInheritedAnnotations(t *testing.T) {
 	newSpec := cluster.Postgresql.DeepCopy()
 	newSpec.ObjectMeta.Annotations["owned-by"] = "fooSync"
 	inheritedAnnotations["owned-by"] = "fooSync"
+	// + new PVC
+	cluster.KubeClient.PersistentVolumeClaims(namespace).Create(context.TODO(), &CreatePVCs(namespace, clusterName+"-2", filterLabels, 1, "1Gi").Items[0], metav1.CreateOptions{})
 	err = cluster.Sync(newSpec)
 	assert.NoError(t, err)
 
@@ -371,8 +373,6 @@ func TestInheritedAnnotations(t *testing.T) {
 	err = checkPooler(false)
 	assert.NoError(t, err)
 
-	// PVC annotations + new PVC
-	cluster.KubeClient.PersistentVolumeClaims(namespace).Create(context.TODO(), &CreatePVCs(namespace, clusterName+"-2", filterLabels, 1, "1Gi", cluster.annotationsSet(nil)).Items[0], metav1.CreateOptions{})
 	err = checkPvc(false)
 	assert.NoError(t, err)
 
@@ -380,6 +380,8 @@ func TestInheritedAnnotations(t *testing.T) {
 	newSpec = cluster.Postgresql.DeepCopy()
 	newSpec.ObjectMeta.Annotations["owned-by"] = "fooUpdate"
 	inheritedAnnotations["owned-by"] = "fooUpdate"
+	// + new PVC
+	cluster.KubeClient.PersistentVolumeClaims(namespace).Create(context.TODO(), &CreatePVCs(namespace, clusterName+"-2", filterLabels, 1, "1Gi").Items[0], metav1.CreateOptions{})
 
 	err = cluster.Update(&cluster.Postgresql, newSpec)
 	assert.NoError(t, err)
@@ -399,8 +401,6 @@ func TestInheritedAnnotations(t *testing.T) {
 	err = checkPooler(false)
 	assert.NoError(t, err)
 
-	// PVC annotations + new PVC
-	cluster.KubeClient.PersistentVolumeClaims(namespace).Create(context.TODO(), &CreatePVCs(namespace, clusterName+"-2", filterLabels, 1, "1Gi", cluster.annotationsSet(nil)).Items[0], metav1.CreateOptions{})
 	err = checkPvc(false)
 	assert.NoError(t, err)
 
