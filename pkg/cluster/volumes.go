@@ -10,7 +10,6 @@ import (
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/types"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/zalando/postgres-operator/pkg/spec"
@@ -220,26 +219,9 @@ func (c *Cluster) syncVolumeClaims(noResize bool) error {
 
 		newAnnotations := c.annotationsSet(nil)
 		if !reflect.DeepEqual(pvc.Annotations, newAnnotations) {
-			if hasDeletedAnnotaions(pvc.Annotations, newAnnotations) {
-				pvc.Annotations = newAnnotations
-				needsUpdate = true
-				c.logger.Debugf("persistent volume claim's annotations for volume %q needs to be updated", pvc.Name)
-			} else if !needsUpdate {
-				patchData, err := metaAnnotationsPatch(newAnnotations)
-				if err != nil {
-					return fmt.Errorf("could not form patch for the persistent volume claim's annotations for volume %q: %v", pvc.Name, err)
-				}
-				_, err = c.KubeClient.PersistentVolumeClaims(pvc.Namespace).Patch(
-					context.TODO(),
-					pvc.Name,
-					types.MergePatchType,
-					[]byte(patchData),
-					metav1.PatchOptions{},
-					"")
-				if err != nil {
-					return fmt.Errorf("could not patch connection pooler annotations %q: %v", patchData, err)
-				}
-			}
+			pvc.Annotations = newAnnotations
+			needsUpdate = true
+			c.logger.Debugf("persistent volume claim's annotations for volume %q needs to be updated", pvc.Name)
 		}
 
 		if needsUpdate {

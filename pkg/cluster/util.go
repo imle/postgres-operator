@@ -328,15 +328,6 @@ func (c *Cluster) annotationsSet(annotations map[string]string) map[string]strin
 	return nil
 }
 
-func hasDeletedAnnotaions(oldAnnotations map[string]string, newAnnotations map[string]string) bool {
-	for k := range oldAnnotations {
-		if _, ok := newAnnotations[k]; !ok {
-			return true
-		}
-	}
-	return false
-}
-
 func (c *Cluster) waitForPodLabel(podEvents chan PodEvent, stopCh chan struct{}, role *PostgresRole) (*v1.Pod, error) {
 	timeout := time.After(c.OpConfig.PodLabelWaitTimeout)
 	for {

@@ -20,7 +20,6 @@ import (
 	v1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/types"
 )
 
 var requirePrimaryRestartWhenDecreased = []string{
@@ -389,21 +388,10 @@ func (c *Cluster) syncStatefulSet(force bool) error {
 		if !cmp.rollingUpdate {
 			for _, pod := range pods {
 				if changed, _ := c.compareAnnotations(pod.ObjectMeta.Annotations, desiredSts.Spec.Template.Annotations); changed {
-					if hasDeletedAnnotaions(c.Statefulset.Spec.Template.Annotations, desiredSts.Spec.Template.Annotations) {
-						pod.ObjectMeta.Annotations = desiredSts.Spec.Template.Annotations
-						_, err := c.KubeClient.Pods(pod.Namespace).Update(context.TODO(), &pod, metav1.UpdateOptions{})
-						if err != nil {
-							return fmt.Errorf("could not update annotations for pod %q: %v", pod.Name, err)
-						}
-					} else {
-						patchData, err := metaAnnotationsPatch(desiredSts.Spec.Template.Annotations)
-						if err != nil {
-							return fmt.Errorf("could not form patch for %s pod annotations: %v", pod.Name, err)
-						}
-						_, err = c.KubeClient.Pods(pod.Namespace).Patch(context.TODO(), pod.Name, types.MergePatchType, patchData, metav1.PatchOptions{})
-						if err != nil {
-							return fmt.Errorf("could not patch annotations for pod %q: %v", pod.Name, err)
-						}
+					pod.ObjectMeta.Annotations = desiredSts.Spec.Template.Annotations
+					_, err := c.KubeClient.Pods(pod.Namespace).Update(context.TODO(), &pod, metav1.UpdateOptions{})
+					if err != nil {
+						return fmt.Errorf("could not update annotations for pod %q: %v", pod.Name, err)
 					}
 				}
 			}
